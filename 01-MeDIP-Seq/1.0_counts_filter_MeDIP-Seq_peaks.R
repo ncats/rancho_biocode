@@ -1,4 +1,4 @@
-d#' Run Rsubread to obtain count data for re-running DESeq2 for
+#' Run Rsubread to obtain count data for re-running DESeq2 for
 #' filtered MeDIP-Seq peaks - run this on linux ec2 for RAM > 16 cores.
 #' Filter to retain peaks in at least two biological replicates
 #' for MeDIP-Seq data from Active Motif.
