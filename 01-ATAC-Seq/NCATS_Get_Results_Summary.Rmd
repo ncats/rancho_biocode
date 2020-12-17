@@ -1,0 +1,50 @@
+---
+title: "create summary"
+author: "David Galbraith"
+date: "11/4/2020"
+output: html_document
+---
+
+```{r load_libraries}
+#load libraries
+library(magrittr)
+library(tidyverse)
+
+#CONSTANTS
+#set a constant to attach to file names
+outfileBase <- "NCATS_ATAC_"
+
+#set a common theme for plotting
+mytheme <- theme(plot.title = element_text(lineheight = 0.8, face = "bold", size = 20),
+                 axis.text = element_text(size = 14),
+                 axis.title = element_text(face = "bold", colour = "Black", size = 16),
+                 legend.text = element_text(colour = "Black", size = 12),
+                 legend.title = element_text(colour = "Black", size = 14))
+
+```
+
+
+```{r load_data}
+#read in all results file
+df <- read.delim("./results/NCATS_ATAC_AllCombinedResults.txt")
+
+```
+
+
+```{r}
+#calculate summary
+resSum <- df %>%
+  mutate(Contrast = gsub("_vs_NT", "", Contrast)) %>%
+  group_by(Contrast) %>%
+  mutate(Up = sum(Log2FC > 0),
+         Down = sum(Log2FC < 0)) %>%
+  dplyr::select(Contrast, Up, Down) %>%
+  distinct(.keep_all = T) %>%
+  as.data.frame()
+
+#write table
+write.table(resSum, "./results/NCATS_ATAC_summary.txt", row.names = F)
+
+```
+
+

@@ -1,0 +1,103 @@
+---
+title: "Filter Peaks"
+output: html_document
+---
+
+
+```{r}
+
+library(readxl)
+library(magrittr)
+library(ggplot2)
+library(tidyverse)
+
+```
+
+
+
+
+```{r get_data}
+
+#read in the merged region data from Active Motif
+df <- read_xlsx("data/AM NCATS ATAC-Seq 8x3-samples 36926/AM NCATS ATAC-Seq 8x3-samples 36926/010ONIH_ATAC-Astro_mergedregs.xlsx")
+
+#The first column is `Merged Region` so this just removes the space
+colnames(df)[1] <- "MergedRegion"
+
+```
+
+
+
+```{r create_filter}
+
+#create a filter for the data by selecting the merged regions, chromosome, start and 
+#end sites, and presence/absence information for each sample and create a tall format
+#that is easier to filter. Clean up the sample and treatment names. Group by treatment
+#and merged region and count how many are present, then remove any peaks that are present
+#in less than two replicates. Finally, pull the list of merged regions that passed the filter
+MRegs <- df %>%
+  select(MergedRegion, Chromosome, Start, End, ends_with("Present")) %>%
+  gather(key = Sample, value = Value, -MergedRegion, -Chromosome, -Start, -End) %>%
+  mutate(Sample = gsub("_ATAC_hg38::1 Present", "", Sample),
+         Sample = gsub(".*Astro-", "", Sample),
+         Sample = gsub("06_Astro_", "", Sample),
+         Sample = gsub("NT_2", "NT-2", Sample),
+         Treatment = gsub("-.*", "", Sample)) %>%
+  group_by(Treatment, MergedRegion) %>%
+  mutate(PresSum = sum(Value),
+         Remove = any(PresSum < 2)) %>% 
+  ungroup() %>%
+  filter(Remove == TRUE) %>%
+  pull(MergedRegion) %>%
+  unique()
+
+#137,297 merged regions total
+#89,859 merged regions after filtering for at least 2 samples in all treatments
+
+rm(df)
+
+```
+
+
+
+```{r reload_data}
+
+#read in the data normalized count data from Active Motif
+df <- read_xlsx("./data/AM NCATS ATAC-Seq diff analysis 36926/AM NCATS ATAC-Seq diff analysis 36926/010ONIH_ATAC-Astro_mergedregs_DESeq2.xlsx")
+
+```
+
+
+```{r Filter_Norm_Counts}
+#remove space from column names
+colnames(df) <- gsub(" ", "", colnames(df))
+
+#select only the columns with the merged region 
+#information and the normalized counts
+df %<>%
+  select(MergedRegion, ends_with("NormCounts")) %>%
+  filter(MergedRegion %in% MRegs) %>%
+  as.data.frame()
+
+#Clean up the column names
+colnames(df) <- gsub("_ATAC_hg38::1NormCounts","", colnames(df))
+colnames(df) <- gsub(".*Astro-", "", colnames(df))
+colnames(df) <- gsub("06_Astro_", "", colnames(df))
+colnames(df) <- gsub("_", ".", colnames(df))
+colnames(df) <- gsub("-", ".", colnames(df))
+
+#set the merged regions as the rownames
+rownames(df) <- df$MergedRegion
+
+```
+
+
+```{r}
+
+#save the matrix of normalized counts for merged regions
+write.table(df, "./data/AM NCATS ATAC-Seq 8x3-samples 36926/AM NCATS ATAC-Seq 8x3-samples 36926/010ONIH_ATAC-Astro_mergedregs_NormCount_filtered.txt", row.names = F, sep = "\t")
+
+```
+
+
+

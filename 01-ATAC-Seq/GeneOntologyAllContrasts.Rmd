@@ -1,0 +1,405 @@
+---
+title: "GO from combined results"
+output: html_document
+---
+
+
+
+```{r load_libraries}
+#load libraries
+library(magrittr)
+library(clusterProfiler)
+library(openxlsx)
+library(org.Hs.eg.db)
+library(VennDetail)
+library(tidyverse)
+
+#CONSTANTS
+#set a constant to attach to file names
+#outfileBase <- "NCATS_ATAC_DESeqOnly_" #used if filtering out ChipDuo
+outfileBase <- "NCATS_ATAC_"
+
+#get contrasts based on files that are available
+#this is not needed if you are just using the list below
+#contrasts <- list.files("./data/bam/combinedResults")
+#contrasts <- contrasts[grepl("_atacseq_genes.txt", contrasts)]
+#contrasts <- gsub("_atacseq_genes.txt", "", contrasts)
+
+#so that all files are not needed for contrast labels
+contrasts <- c("Api_vs_NT", "CAY_vs_NT", "CUDC_vs_NT", "LAQ_vs_NT", "Pano_vs_NT", "SB_vs_NT", "SR42_vs_NT")
+
+#set a common theme for plotting
+mytheme <- theme(plot.title = element_text(lineheight = 0.8, face = "bold", size = 20),
+                 axis.text = element_text(size = 14),
+                 axis.title = element_text(face = "bold", colour = "Black", size = 16),
+                 legend.text = element_text(colour = "Black", size = 12),
+                 legend.title = element_text(colour = "Black", size = 14))
+
+#get genes to remove as suggested by Claire
+GenesToRemove <- read.delim("./37097_genes_filter.txt", header = F)
+```
+
+
+
+```{r create_Summary}
+
+#initialize the res dataframe
+res <- data.frame()
+
+#create a summary of number of differentially accessible regions 
+#for each of the contrasts
+for(i in contrasts) {
+
+  #read in data
+  df <- read.delim(file = paste("./data/bam/combinedResults/", i, "_atacseq_genes.txt", sep = ""), header = T, sep = "\t")
+  
+  #remove regions >10kb from a gene, genes from the list above, 
+  #or genes that have an absolute log2 fold change less than 1
+  df %<>%
+    separate_rows(Distance, Gene, sep = ",", convert = TRUE) %>%
+    mutate(Gene = gsub("[()]", "", Gene),
+           Distance = gsub("[()]", "", Distance),
+           Distance = as.numeric(Distance),
+           Source = case_when(Source == "ChipDuo, MACS2/DESeq2" ~ "Both",
+                              Source == "MACS2/DESeq2, ChipDuo" ~ "Both",
+                              TRUE ~ Source)) %>%
+    filter(abs(Distance) <= 10000, 
+           #Source != "ChipDuo", #could use this to remove ChipDuo results
+           !Gene %in% GenesToRemove$V1, 
+           AbsLog2FC >= 1) 
+  
+  #create a summary of the differentially accessible regions
+  tmpSum <- as.data.frame(table(sign(df$Log2FC)))
+  tmpSum$Treatment <- gsub("_vs_NT", "", i)
+  tmpSum %<>%
+    rename(Direction = Var1,
+           n = Freq) %>%
+    mutate(Direction = case_when(Direction == -1 ~ "Down",
+                                 Direction == 1 ~ "Up"))
+  
+  #combine results summary with previous
+  res <- rbind(res, tmpSum)
+}
+
+#spread into summary table
+res %<>%
+  spread(key = Treatment, value = n)
+
+#write output
+write.table(res, paste("./results/", outfileBase, "summary.txt", sep = ""), row.names = F, sep = "\t", quote = F)
+
+```
+
+
+
+```{r get_annotation}
+
+#Getting annotation from Entrez and Ensembl. These files are large, so I have
+#generated a smaller file that contains all relevant information and uploaded
+#that, but I have also kept this code, just in case anyone is interested.
+#get entrez IDs
+#entrez <- read.delim("~/refs/hg38Entrez annotation.txt", header = T)
+#entrez %<>%
+#  rename(ENSEMBL = Gene.stable.ID,
+#         Gene = HGNC.symbol,
+#         EntrezID = NCBI.gene..formerly.Entrezgene..ID) %>%
+#  dplyr::select(-Gene) %>%
+#  group_by(ENSEMBL) %>%
+#  filter(EntrezID == min(EntrezID)) %>%
+#  ungroup()
+
+#annotate data for GO
+#annot <- read.delim("~/refs/Homo_sapiens.GRCh38.101_GenesOnly.gtf", header = F)
+#annot %<>%
+#  separate(V9, into = c("ENSEMBL", "B", "Gene", "C", "D", "E"), sep = ";") %>%
+#  rename(Chr = V1,
+#         Start = V4,
+#         End = V5,
+#         Strand = V7) %>%
+#  dplyr::select(Chr, Start, End, Strand, ENSEMBL, Gene) %>%
+#  mutate(ENSEMBL = gsub("gene_id", "", ENSEMBL),
+#         Gene = gsub("gene_name", "", Gene),
+#         Chr = paste("chr", Chr, sep = "")) %>%
+#  mutate(ENSEMBL = gsub(" ", "", ENSEMBL),
+#         Gene = gsub(" ", "", Gene)) %>%
+#  dplyr::left_join(., entrez, by = "ENSEMBL") %>%
+#  mutate(EntrezID = as.character(EntrezID))
+
+
+#the files above are large, just use this section
+#write.table(annot, "./data/NCATS_annot.txt", row.names = F, sep = "\t")
+annot <- read.delim("./data/NCATS_annot.txt", header = T, sep = "\t")
+```
+
+
+
+```{r}
+
+#initialize an excel workbook
+xlwb <- createWorkbook()
+
+#run enrichment analyses for each contrast
+for(contrast in contrasts) {
+  
+  ###################################
+  #Read in data for each contrast   
+  ###################################
+  
+  #load data from specific contrast
+  df <- read.delim(file = paste("./data/bam/combinedResults/", contrast, "_atacseq_genes.txt", sep = ""), header = T, sep = "\t")
+  
+  
+  #remove parantheses around genes and distances over 10kb away
+  #we can filter these later
+  df %<>%
+    separate_rows(Distance, Gene, sep = ",", convert = TRUE) %>%
+    mutate(Gene = gsub("[()]", "", Gene),
+           Distance = gsub("[()]", "", Distance),
+           Distance = as.numeric(Distance),
+           Source = case_when(Source == "ChipDuo, MACS2/DESeq2" ~ "Both",
+                              Source == "MACS2/DESeq2, ChipDuo" ~ "Both",
+                              TRUE ~ Source)) %>%
+    filter(abs(Distance) <= 10000, 
+           #Source != "ChipDuo", 
+           !Gene %in% GenesToRemove$V1) 
+    
+  #Take the most significant hit for each gene
+  sigDf <- df %>%
+    group_by(Gene) %>%
+    filter(AdjP.ScoreInv == min(AdjP.ScoreInv)) %>%
+    ungroup() %>%
+    arrange(AdjP.ScoreInv) %>%
+    mutate(Significant = case_when(AdjP.ScoreInv < 0.05 & AbsLog2FC > 1 ~ 1,
+                                   TRUE ~ 0),
+           Significant = as.factor(Significant)) %>%
+    left_join(., annot, by = "Gene") %>%
+    #distinct(.keep_all = T) %>%
+    mutate(Source = case_when(Significant == 0 ~ "NS",
+                                   TRUE ~ Source),
+           Contrast = contrast)
+  
+  
+  ###################################
+  #Volcano Plot
+  ###################################
+  
+  #volcano plot
+  p <- ggplot(sigDf, aes(x = Log2FC, y = -log10(AdjP.ScoreInv), color = Source)) +
+          geom_point(size = 2) + 
+          geom_hline(yintercept = -log10(0.01), color="gray7", linetype="dashed") +
+          geom_vline(xintercept = c(-1,1), color="gray7", linetype="dashed") + 
+          labs(x = "Log2 Fold Change",
+               y = "-Log10 FDR/ScoreInversion",
+               title = paste(contrast, " Volcano Plot", sep = "")) +
+          #scale_color_manual(values = c("lightGray", "red")) + 
+          theme_classic() +
+          theme(legend.position="bottom") +
+          scale_color_manual(values = c("#F8766D", "#00BA38", "#619CFF", "gray80")) +
+          mytheme
+  
+  p
+  
+  #save plot
+  filename <- paste("./figures/volcano/", outfileBase, contrast, "_volcano.pdf", sep = "")
+  ggsave(filename = filename,
+         device   = "pdf", 
+         plot     =  p, 
+         height   = 6, 
+         width    = 8, 
+         units    = "in")
+  
+  
+  #filter to remove low fc genes for plotting
+  sigDf1 <- sigDf %>%
+    filter(AbsLog2FC > 1)
+  
+  ###################################
+  #Upset Plot
+  ###################################
+  
+  #get chipduo hits
+  chipDuo <- sigDf1 %>%
+    filter(Source %in% c("ChipDuo", "Both")) %>%
+    pull(Gene)
+  
+  
+  #get macs2 hits
+  macs <- sigDf1 %>%
+    filter(Source %in% c("MACS2/DESeq2", "Both")) %>%
+    pull(Gene)
+  
+  #create upset plot
+  ven <- venndetail(list("ChipDuo" = chipDuo, "MACS2" = macs))
+  
+  
+  #initialize the PDf
+  #dev.off()
+  pdf(file = paste("./figures/venn/", outfileBase, contrast, "_upset.pdf", sep = ""),   
+      width = 9, 
+      height = 5) 
+  
+  print(plot(ven, type = "upset"))
+  dev.off()
+  
+  
+    
+  ###################################
+  #Enrichment Analysis GO
+  ###################################
+  
+  #run gene set enrichment using GO
+  ego <- enrichGO(gene          = sigDf1$EnsemblD,
+                  OrgDb         = org.Hs.eg.db,
+                  universe      = annot$EnsemblD, 
+                  keyType       = 'ENSEMBL',
+                  ont           = "ALL",
+                  pAdjustMethod = "BH",
+                  pvalueCutoff  = 0.01)
+  
+  dim(as.data.frame(ego))
+  
+  
+  #make dot plot
+  p <- dotplot(ego, showCategory=15) + 
+    labs(title = paste(contrast, " Gene Ontology", sep = "")) +
+    mytheme
+  p
+  
+  #save plot
+  filename <- paste("./figures/GO/", outfileBase, contrast, "_dotplot.pdf", sep = "")
+  ggsave(filename = filename,
+         device   = "pdf", 
+         plot     =  p, 
+         height   = 6, 
+         width    = 9, 
+         units    = "in")
+  
+  #emapplot throws an error if there are no significant hits  
+  if(nrow(as.data.frame(ego)) > 1){  
+  #plot enrichment map
+  p <- emapplot(ego, showCategory=15)
+  p
+  
+  #save plot
+  filename <- paste("./figures/GO/", outfileBase, contrast, "_enrichMap.pdf", sep = "")
+  ggsave(filename = filename,
+         device   = "pdf", 
+         plot     =  p, 
+         height   = 6, 
+         width    = 8, 
+         units    = "in")
+  }
+  
+  addWorksheet(xlwb, paste(contrast, "_Enrichment", sep = ""))
+  writeData(xlwb, 
+            sheet = paste(contrast, "_Enrichment", sep = ""), 
+            x = as.data.frame(ego))
+  
+  
+  
+  ###################################
+  #Enrichment Analysis KEGG
+  ###################################
+  
+  #run gene set enrichment using KEGG
+  kk <- enrichKEGG(gene          = sigDf1$EntrezID,
+                   organism      = 'hsa',
+                   universe      = as.character(annot$EntrezID), 
+                   pvalueCutoff  = 0.05) 
+  
+  dim(as.data.frame(kk))
+  
+  
+  #make dot plot
+  p <- dotplot(kk, showCategory=15) + 
+    labs(title = paste(contrast, " KEGG", sep = "")) +
+    mytheme
+  p
+  
+  #save plot
+  filename <- paste("./figures/GO/", outfileBase, contrast, "_KEGG_dotplot.pdf", sep = "")
+  ggsave(filename = filename,
+         device   = "pdf", 
+         plot     =  p, 
+         height   = 6, 
+         width    = 8, 
+         units    = "in")
+  
+    
+  #emapplot throws an error if there are no significant hits  
+  if(nrow(as.data.frame(kk)) > 1){  
+  #plot enrichment map
+  p <- emapplot(kk, showCategory=15)
+  p
+  
+  #save plot
+  filename <- paste("./figures/GO/", outfileBase, contrast, "_KEGG_enrichMap.pdf", sep = "")
+  ggsave(filename = filename,
+         device   = "pdf", 
+         plot     =  p, 
+         height   = 6, 
+         width    = 8, 
+         units    = "in")
+  }
+  
+  addWorksheet(xlwb, paste(contrast, "_KEGG_Enrichment", sep = ""))
+  writeData(xlwb, 
+            sheet = paste(contrast, "_KEGG_Enrichment", sep = ""), 
+            x = as.data.frame(kk))
+  
+  
+  #removing ranked GSEA because there are many "ties" in significance because of overlapping
+  #peaks. Leaving code in, in case anyone wants it for something
+    
+#  ###################################
+#  #GSEA
+#  ###################################
+#  
+#  #arrange data by log fold change for gsea
+#  sigDfGSE <- sigDf %>%
+#    mutate(sorting = sign(Log2FC) * -log10(AdjP.ScoreInv)) %>%
+#    arrange(desc(sorting))
+#  
+#  #pull log2 fold change and add ensembl IDs
+#  gseDf <- sigDfGSE$sorting
+#  names(gseDf) <- sigDfGSE$EnsemblD
+#  
+#  #run gsea
+#  ego2 <- gseGO(geneList     = gseDf,
+#                OrgDb        = org.Hs.eg.db,
+#                keyType      = 'ENSEMBL',
+#                ont          = "ALL",
+#                minGSSize    = 100,
+#                maxGSSize    = 500,
+#                pvalueCutoff = 0.1,
+#                verbose      = FALSE)
+#  
+#  #add to excel file    
+#  addWorksheet(xlwb, paste(contrast, "_GSEA", sep = ""))
+#  writeData(xlwb, 
+#            sheet = paste(contrast, "_GSEA", sep = ""), 
+#            x = as.data.frame(ego2))
+#  
+#  #ridge plot
+#  p <- ridgeplot(ego2, showCategory = 10) +
+#          labs(x = "Enrichment Distribution",
+#               title = paste(contrast, " GSEA", sep = "")) +
+#          mytheme
+#  p
+#  
+#  #save plot
+#  filename <- paste("./results/GO/", outfileBase, contrast, "_Ridgeplot.pdf", sep = "")
+#  ggsave(filename = filename,
+#         device   = "pdf", 
+#         plot     =  p, 
+#         height   = 6, 
+#         width    = 8, 
+#         units    = "in")
+    
+}
+
+#save excel workbook with Enrichment results
+saveWorkbook(xlwb, paste("./results/", outfileBase, "Enrichment.xls", sep = ""))
+
+```
+

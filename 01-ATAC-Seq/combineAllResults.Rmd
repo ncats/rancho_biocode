@@ -1,0 +1,132 @@
+---
+title: "GO from combined results"
+output: html_document
+---
+
+
+
+```{r load_libraries}
+
+library(magrittr)
+library(clusterProfiler)
+library(openxlsx)
+library(org.Hs.eg.db)
+library(VennDetail)
+library(tidyverse)
+
+
+#CONSTANTS
+#outfileBase <- "NCATS_ATAC_DESeqOnly_" #used if filtering out ChipDuo
+outfileBase <- "NCATS_ATAC_"
+
+#get contrasts based on files that are available
+#this is not needed if you are just using the list below
+#contrasts <- list.files("./data/bam/combinedResults")
+#contrasts <- contrasts[grepl("_atacseq_genes.txt", contrasts)]
+#contrasts <- gsub("_atacseq_genes.txt", "", contrasts)
+
+#so that all files are not needed for contrast labels
+contrasts <- c("Api_vs_NT", "CAY_vs_NT", "CUDC_vs_NT", "LAQ_vs_NT", "Pano_vs_NT", "SB_vs_NT", "SR42_vs_NT")
+
+mytheme <- theme(plot.title = element_text(lineheight = 0.8, face = "bold", size = 20),
+                 axis.text = element_text(size = 14),
+                 axis.title = element_text(face = "bold", colour = "Black", size = 16),
+                 legend.text = element_text(colour = "Black", size = 12),
+                 legend.title = element_text(colour = "Black", size = 14))
+
+#get genes to remove suggested by Claire
+GenesToRemove <- read.delim("./37097_genes_filter.txt", header = F)
+
+#set seed for reproducibility
+set.seed(1234)
+
+```
+
+
+
+```{r get_annotation}
+
+#get entrez IDs
+entrez <- read.delim("~/refs/hg38Entrez annotation.txt", header = T)
+entrez %<>%
+rename(EnsemblD = Gene.stable.ID,
+Gene = HGNC.symbol,
+EntrezID = NCBI.gene..formerly.Entrezgene..ID) %>%
+select(-Gene) %>%
+group_by(EnsemblD) %>%
+filter(EntrezID == min(EntrezID)) %>%
+ungroup()
+
+#annotate data for GO
+annot <- read.delim("~/refs/Homo_sapiens.GRCh38.101_GenesOnly.gtf", header = F)
+annot %<>%
+  separate(V9, into = c("EnsemblD", "B", "Gene", "C", "D", "E"), sep = ";") %>%
+  select(EnsemblD, Gene) %>%
+  mutate(EnsemblD = gsub("gene_id", "", EnsemblD),
+         Gene = gsub("gene_name", "", Gene)) %>%
+  mutate(EnsemblD = gsub(" ", "", EnsemblD),
+         Gene = gsub(" ", "", Gene)) %>%
+  dplyr::left_join(., entrez, by = "EnsemblD") %>%
+  mutate(EntrezID = as.character(EntrezID)) %>%
+  distinct(Gene, .keep_all = T)
+
+
+#the files above are large, just use this section
+#write.table(annot, "./data/NCATS_annot.txt", row.names = F, sep = "\t")
+annot <- read.delim("./data/NCATS_annot.txt", header = T, sep = "\t")
+
+```
+
+
+
+```{r}
+
+allDf <- data.frame()
+for(contrast in contrasts) {
+  
+  ###################################
+  #Read in data for each contrast   
+  ###################################
+  
+  #load data from specific contrast
+  df <- read.delim(file = paste("./data/bam/combinedResults/", contrast, "_atacseq_genes.txt", sep = ""), header = T, sep = "\t")
+  
+  
+  #remove parantheses around genes and distances over 10kb away
+  #we can filter these later
+  df %<>%
+    separate_rows(Distance, Gene, sep = ",", convert = TRUE) %>%
+    mutate(Gene = gsub("[()]", "", Gene),
+           Distance = gsub("[()]", "", Distance),
+           Distance = as.numeric(Distance),
+           Source = case_when(Source == "ChipDuo, MACS2/DESeq2" ~ "Both",
+                              Source == "MACS2/DESeq2, ChipDuo" ~ "Both",
+                              TRUE ~ Source)) %>%
+    filter(abs(Distance) <= 10000, 
+           #Source != "ChipDuo", 
+           !Gene %in% GenesToRemove$V1) 
+    
+  #Take the most significant hit for each gene
+  sigDf <- df %>%
+    #group_by(Gene) %>%
+    #filter(AdjP.ScoreInv == min(AdjP.ScoreInv)) %>%
+    #ungroup() %>%
+    arrange(AdjP.ScoreInv) %>%
+    mutate(Significant = case_when(AdjP.ScoreInv < 0.05 & AbsLog2FC > 1 ~ 1,
+                                   TRUE ~ 0),
+           Significant = as.factor(Significant)) %>%
+    left_join(., annot, by = "Gene") %>%
+    #distinct(.keep_all = T) %>%
+    mutate(Source = case_when(Significant == 0 ~ "NS",
+                                   TRUE ~ Source),
+           Contrast = contrast)
+
+  allDf <- rbind(allDf, sigDf)
+    
+}
+
+#write table with all results
+write.table(allDf, paste("./results/", outfileBase, "AllCombinedResultsAll.txt", sep = ""), row.names = F, sep = "\t", quote = F)
+
+```
+
