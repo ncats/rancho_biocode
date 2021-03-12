@@ -18,14 +18,14 @@ outfileBase <- "03_NCATS_ATAC_"
 #contrasts <- gsub("_atacseq_genes.txt", "", contrasts)
 
 #so that all files are not needed for contrast labels
-contrasts <- c("A1_vs_NCRM5", "D30_vs_A1", "D30_vs_NCRM5", "D50_vs_D30", "D50_vs_NCRM5", "LSB_vs_A1", "LSB_vs_NCRM5")
+contrasts <- c("A1_vs_D0", "D30_vs_A1", "D30_vs_D0", "D50_vs_D30", "D50_vs_D0", "LSB_vs_A1", "LSB_vs_D0")
 
 #set a common theme for plotting
-mytheme <- theme(plot.title = element_text(lineheight = 0.8, face = "bold", size = 20),
-                 axis.text = element_text(size = 14),
-                 axis.title = element_text(face = "bold", colour = "Black", size = 16),
-                 legend.text = element_text(colour = "Black", size = 12),
-                 legend.title = element_text(colour = "Black", size = 14))
+mytheme <- theme(plot.title = element_text(lineheight = 0.8, size = 20, family = "NotoSans-Bold"), 
+                 axis.text = element_text(size = 14, family = "NotoSans-Condensed"),
+                 axis.title = element_text(colour = "Black", size = 16, family = "NotoSans-Bold"),
+                 legend.text = element_text(colour = "Black", size = 12, family = "NotoSans-Condensed"),
+                 legend.title = element_text(colour = "Black", size = 14, family = "NotoSans-Condensed"))
 
 #get annotation to use as a background for gene ontology
 annot <- read.delim("./data/refs/NCATS_annot.txt", header = T, sep = "\t")
@@ -70,9 +70,8 @@ for(contrast in contrasts) {
   p
   
   #save plot
-  filename <- paste("./figures/volcano/", outfileBase, contrast, "_volcano.pdf", sep = "")
+  filename <- paste("./figures/volcano/", outfileBase, contrast, "_volcano.png", sep = "")
   ggsave(filename = filename,
-         device   = "pdf", 
          plot     =  p, 
          height   = 6, 
          width    = 8, 
@@ -106,12 +105,11 @@ for(contrast in contrasts) {
   
   #initialize the PDf
   #dev.off()
-  pdf(file = paste("./figures/venn/", outfileBase, contrast, "_upset.pdf", sep = ""),   
-      width = 9, 
-      height = 5) 
-  
+  cairo_pdf(filename = paste("./figures/venn/", outfileBase, contrast, "_upset.pdf", sep = ""), 
+            family = "NotoSans-Condensed",
+            width = 9, height = 5)
   print(plot(ven, type = "upset"))
-  dev.off()
+  graphics.off()
   
   
   
@@ -130,17 +128,15 @@ for(contrast in contrasts) {
   
   dim(as.data.frame(ego))
   
-  
   #make dot plot
-  p <- dotplot(ego, showCategory=15) + 
+  p <- dotplot(ego, showCategory = 10) + 
     labs(title = paste(contrast, " Gene Ontology", sep = "")) +
     mytheme
   p
   
   #save plot
-  filename <- paste("./figures/GO/", outfileBase, contrast, "_dotplot.pdf", sep = "")
-  ggsave(filename = filename,
-         device   = "pdf", 
+  filename <- paste("./figures/GO/", outfileBase, contrast, "_dotplot.png", sep = "")
+  ggsave(filename = filename, 
          plot     =  p, 
          height   = 6, 
          width    = 9, 
@@ -149,13 +145,17 @@ for(contrast in contrasts) {
   #emapplot throws an error if there are no significant hits  
   if(nrow(as.data.frame(ego)) > 1){  
     #plot enrichment map
-    p <- emapplot(ego, showCategory=15)
+    p <- emapplot(ego, showCategory = 10) +
+      theme(axis.title = element_blank(),
+            axis.text.x = element_blank(),
+            axis.text.y = element_blank()) +
+      mytheme +
+      ylab("") + xlab("")
     p
     
     #save plot
-    filename <- paste("./figures/GO/", outfileBase, contrast, "_enrichMap.pdf", sep = "")
+    filename <- paste("./figures/GO/", outfileBase, contrast, "_enrichMap.png", sep = "")
     ggsave(filename = filename,
-           device   = "pdf", 
            plot     =  p, 
            height   = 6, 
            width    = 8, 
@@ -183,15 +183,14 @@ for(contrast in contrasts) {
   
   
   #make dot plot
-  p <- dotplot(kk, showCategory=15) + 
+  p <- dotplot(kk, showCategory = 10) + 
     labs(title = paste(contrast, " KEGG", sep = "")) +
     mytheme
   p
   
   #save plot
-  filename <- paste("./figures/GO/", outfileBase, contrast, "_KEGG_dotplot.pdf", sep = "")
+  filename <- paste("./figures/GO/", outfileBase, contrast, "_KEGG_dotplot.png", sep = "")
   ggsave(filename = filename,
-         device   = "pdf", 
          plot     =  p, 
          height   = 6, 
          width    = 8, 
@@ -201,13 +200,17 @@ for(contrast in contrasts) {
   #emapplot throws an error if there are no significant hits  
   if(nrow(as.data.frame(kk)) > 1){  
     #plot enrichment map
-    p <- emapplot(kk, showCategory=15)
+    p <- emapplot(kk, showCategory = 10) +
+      theme(axis.title = element_blank(),
+            axis.text.x = element_blank(),
+            axis.text.y = element_blank()) +
+      mytheme +
+      ylab("") + xlab("")
     p
     
     #save plot
-    filename <- paste("./figures/GO/", outfileBase, contrast, "_KEGG_enrichMap.pdf", sep = "")
+    filename <- paste("./figures/GO/", outfileBase, contrast, "_KEGG_enrichMap.png", sep = "")
     ggsave(filename = filename,
-           device   = "pdf", 
            plot     =  p, 
            height   = 6, 
            width    = 8, 

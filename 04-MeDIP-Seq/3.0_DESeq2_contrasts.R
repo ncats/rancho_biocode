@@ -4,10 +4,21 @@
 # req'd pkgs
 x <- c("ggplot2", "tidyverse", "DESeq2", 
        "data.table", "tidyverse", 
-       "GenomicRanges", "IRanges")
+       "GenomicRanges", "IRanges", "extrafont",
+       "extrafontdb")
 sapply(x, library, character.only = TRUE)
 
+loadfonts()
+
 source("./functions/adj_pca.R")
+
+#set a common theme for plotting
+mytheme <- theme(plot.title = element_text(lineheight = 0.8, size = 20),
+                 axis.text = element_text(size = 14, family = "NotoSans-Condensed"),
+                 axis.title = element_text(colour = "Black", size = 16, family = "NotoSans-Bold"),
+                 legend.text = element_text(colour = "Black", size = 12, family = "NotoSans-Condensed"),
+                 legend.title = element_text(colour = "Black", size = 14, family = "NotoSans-Condensed"))
+
 
 # load medip/annotation data
 data <- fread("./adj_data/final_peaks_annotatr.csv")
@@ -24,20 +35,34 @@ rownames(counts) <- nam
 
 cols <- names(counts)
 # rename contrasts for ease downstream
-coldata <- data.frame(treatment = ifelse(grepl("NCRM5.D30", cols), "NCRM5-D30",
-                                         ifelse(grepl("NCRM5.D50", cols), "NCRM5-D50",
+coldata <- data.frame(Treatment = ifelse(grepl("NCRM5.D30", cols), "D30",
+                                         ifelse(grepl("NCRM5.D50", cols), "D50",
                                                 ifelse(grepl("A1", cols), "A1",
                                                        ifelse(grepl("LSB", cols), "LSB",
-                                                              ifelse(grepl("NCRM5$", cols), "hPSCs_day0", "NA"))))))
+                                                              ifelse(grepl("NCRM5$", cols), "D0", "NA"))))))
 rownames(coldata) <- colnames(counts)
 counts <- as.matrix(counts)
 
 # set up deseq obj
-dds <- DESeqDataSetFromMatrix(counts, coldata, ~treatment)
+dds <- DESeqDataSetFromMatrix(counts, coldata, ~Treatment)
 rld <- vst(dds, blind = T)
-CairoPDF(file = "./adj_data/plots/pca/pca_all.png", width = 5, height = 5, family = "NotoSans-Condensed")
-print(adj_pca(rld, intgroup = "treatment") + theme_minimal())
-graphics.off()
+p <- adj_pca(rld, intgroup = "Treatment")
+p <- p +
+  geom_point(size = 2 ) +
+  geom_vline(xintercept = 0, color = "gray") +
+  geom_hline(yintercept = 0, color = "gray") +
+  labs(x = "PC1 (95%)",
+       y = "PC2 (2%)") +
+  theme_classic() +
+  mytheme
+p$labels$colour <- "Treatment"
+
+ggsave(filename = "./adj_data/plots/pca/pca_all.png",
+       plot =  p, 
+       height = 5, 
+       width = 5, 
+       units = "in")
+
 # run DESeq2
 dds <- DESeq(dds)
 

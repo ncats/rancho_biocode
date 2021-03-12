@@ -6,16 +6,17 @@ library(GenomicAlignments)
 library(data.table)
 library(Cairo)
 library(magrittr)
+library(biomaRt)
 library(tidyverse)
+library(extrafont)
 
 #get functions
 source("./code/functions/build_locus_zoom_DAG.R")
 
-
 ##CONSTANTS
 
 #create a list of the contrasts to loop through
-contrasts <- c("A1_vs_NCRM5", "D30_vs_A1", "D30_vs_NCRM5", "D50_vs_D30", "D50_vs_NCRM5", "LSB_vs_A1", "LSB_vs_NCRM5")
+contrasts <- c("A1_vs_D0", "D30_vs_A1", "D30_vs_D0", "D50_vs_D30", "D50_vs_D0", "LSB_vs_A1", "LSB_vs_D0")
 
 #read the results file
 dfall <- read.delim("./results/03_NCATS_ATAC_AllCombinedResults.txt", header = T, sep = "\t")
@@ -23,15 +24,17 @@ dfall <- read.delim("./results/03_NCATS_ATAC_AllCombinedResults.txt", header = T
 #get annotation
 ann <- read.delim("./data/refs/NCATS_annot.txt", header = T, sep = "\t")
 
-for(contrast in contrasts) {
+all_dtrack_cont <- readRDS("~/Desktop/all_dtrack_cont.RDS")
+
+for(i in 1:length(contrasts)) {
   
   #filter data for only significant genes and clean up the contrast column
   df <- dfall %>%
-    filter(Contrast == contrast,
+    filter(Contrast == contrasts[i],
            Significant == 1)
   
   #split the contrast name into the two treatments    
-  contrast <- as.list(strsplit(contrast, "_vs_"))
+  contrast <- as.list(strsplit(contrasts[i], "_vs_"))
   
   #identify genes of interest
   #top 5 genes
@@ -60,7 +63,8 @@ for(contrast in contrasts) {
            Start = Start + maxUp - 500,
            End = End + maxDown + 500) %>%
     dplyr::select(-Distance, -maxUp, -maxDown) %>%
-    distinct(.keep_all = T)
+    distinct(.keep_all = T) %>%
+    mutate_at(c(4:6), as.character)
   
   
   ####### Ideogram track #######
@@ -93,7 +97,7 @@ for(contrast in contrasts) {
   })
   
   aTrack <- lapply(1:length(peaks), function(x) 
-    aTrack <- anno_track(st = peaks[[x]]$Start,
+    aTrack <- anno_track(st = peaks[[x]]$Start, 
                          chr = peaks[[x]]$Chr[1],
                          plot_name = nam[[x]],
                          #plot_name = "", # if you want to remove the names 
@@ -120,94 +124,92 @@ for(contrast in contrasts) {
     )
   )
   
-  
-  
-  
-  
   ####### Gene_Region_Track ######
   bmTrack <- lapply(1:nrow(annot), function(x)
     BiomartGeneRegionTrack(genome = "hg38",
-                           chromosome = annot[x,"Chr"], 
-                           start = annot[x,"Start"], 
-                           end = annot[x,"End"],
-                           #name = "ENSEMBL",
+                           chromosome = annot$Chr[x], 
+                           start = annot$Start[x], 
+                           end = annot$End[x],
                            name = "", #to shrink the track
                            collapseTranscripts = "meta",
-                           filters = list(ensembl_gene_id = annot[x,"ENSEMBL"]),
+                           filters = list("ensembl_gene_id" = annot$ENSEMBL[x]),
                            #using fill color from UCSC genome browser
                            fill = "#0C0C78",
-                           col = "#0C0C78")
+                           col = "#0C0C78"
+                           )
   )
   
   
   ########## Data Track ############
-  # pull coverage from bam files
-  bam_files <- list.files("./bam/")
-  bam_files <- bam_files[grepl("\\.bam$", bam_files)]
-  bam_files <- paste("./bam/", bam_files, sep = "")
-  
-  
-  #change the - to an _ to seperate D30 and D50 samples from NCRM5
-  #this will be changed back later
-  bam_files <- gsub("-D30", "_D30", bam_files)
-  bam_files <- gsub("-D50", "_D50", bam_files)
-  
-  #create a name for the bam based on the sample to be used 
-  #as a title for the track in the visualization
-  bam_nam <- gsub(".*JNIH_", "", bam_files)
-  bam_nam <- gsub("_ATAC_.*", "", bam_nam)
-  
-  
-  #reduce files
-  contrast_files <- bam_files[grep(paste(contrast[[1]],"-", sep = "", collapse = "|"), bam_files)]
-  contrast_nam <- bam_nam[grep(paste(contrast[[1]],"-", sep = "", collapse = "|"), bam_nam)]
-  
-  #changing this back to access correct files
-  contrast_files <- gsub("_D30", "-D30", contrast_files)
-  contrast_files <- gsub("_D50", "-D50", contrast_files)
-  
-  
-  # this has been reduced to only the target contrast, can do 1:6
-  all_cont <- lapply(1:length(range), function(x) {
-    unlist(lapply(c(1:6), function(y) {
-      build_cov(chr = peaks[[x]]$Chr[1],
-                range1 = range[[x]][1],
-                range2 = range[[x]][2],
-                file = contrast_files[y])
-    }), recursive = F)
-  })
-  
-  
+  # # pull coverage from bam files
+  # bam_files <- list.files("./bam/")
+  # bam_files <- bam_files[grepl("\\.bam$", bam_files)]
+  # bam_files <- paste("./bam/", bam_files, sep = "")
+  # 
+  # 
+  # #change the - to an _ to seperate D30 and D50 samples from NCRM5
+  # #this will be changed back later
+  # bam_files <- gsub("-D30", "_D30", bam_files)
+  # bam_files <- gsub("-D50", "_D50", bam_files)
+  # 
+  # #create a name for the bam based on the sample to be used
+  # #as a title for the track in the visualization
+  # bam_nam <- gsub(".*JNIH_", "", bam_files)
+  # bam_nam <- gsub("_ATAC_.*", "", bam_nam)
+  # 
+  # 
+  # #reduce files
+  # contrast_files <- bam_files[grep(paste(contrast[[1]],"-", sep = "", collapse = "|"), bam_files)]
+  # contrast_nam <- bam_nam[grep(paste(contrast[[1]],"-", sep = "", collapse = "|"), bam_nam)]
+  # 
+  # #changing this back to access correct files
+  # contrast_files <- gsub("_D30", "-D30", contrast_files)
+  # contrast_files <- gsub("_D50", "-D50", contrast_files)
+  # 
+  # 
+  # # this has been reduced to only the target contrast, can do 1:6
+  # all_cont <- lapply(1:length(range), function(x) {
+  #   unlist(lapply(c(1:6), function(y) {
+  #     build_cov(chr = peaks[[x]]$Chr[1],
+  #               range1 = range[[x]][1],
+  #               range2 = range[[x]][2],
+  #               file = contrast_files[y])
+  #   }), recursive = F)
+  # })
+
+
   ####### Combine Tracks #######
-  all_dtrack_cont <- lapply(1:length(all_cont), function(x) {
-    #get max coverage for consistent scales
-    max_cov <- c()
-    for(i in 1:length(all_cont[[x]])){
-      tmp_max <- max(all_cont[[x]][[i]]$coverage)
-      max_cov <- append(max_cov, tmp_max)
-    }
-    max_cov <- max(max_cov)
-    ylims <- range(0, max_cov)
-    #create data track
-    unlist(lapply(c(1:6), function(y) 
-      dat_track(all_cont[[x]][[y]],
-                gen = "hg38",
-                style = "histogram",
-                title = contrast_nam[y],
-                chr = gsub("chr", "", peaks[[x]]$Chr[1]),
-                ylim = ylims
-      )
-    ), recursive = F)
-  })
+  # all_dtrack_cont <- lapply(1:length(all_cont), function(x) {
+  #   #get max coverage for consistent scales
+  #   max_cov <- c()
+  #   for(i in 1:length(all_cont[[x]])){
+  #     tmp_max <- max(all_cont[[x]][[i]]$coverage)
+  #     max_cov <- append(max_cov, tmp_max)
+  #   }
+  #   max_cov <- max(max_cov)
+  #   ylims <- range(0, max_cov)
+  #   #create data track
+  #   unlist(lapply(c(1:6), function(y)
+  #     dat_track(all_cont[[x]][[y]],
+  #               gen = "hg38",
+  #               style = "histogram",
+  #               title = contrast_nam[y],
+  #               chr = gsub("chr", "", peaks[[x]]$Chr[1]),
+  #               ylim = ylims
+  #     )
+  #   ), recursive = F)
+  # })
   
+  dtrack <- all_dtrack_cont[[i]]
+
   ########## plot all data! ############
   ########## combine itrack, atrack and data tracks
   ########## into a single png
   first <- lapply(1:length(itrack), function(x)
     list(itrack[[x]], aTrack[[x]], bmTrack[[x]]))
   
-  comb_cont <- lapply(1:length(all_dtrack_cont), function(x)
-    c(first[[x]], all_dtrack_cont[[x]], gtrack[[x]]))
+  comb_cont <- lapply(1:length(dtrack), function(x)
+    c(first[[x]], dtrack[[x]], gtrack[[x]]))
   
   #set a contrast name
   cont <- paste(contrast[[1]], collapse = " vs ")
@@ -221,7 +223,9 @@ for(contrast in contrasts) {
   )
   
   lapply(1:length(comb_cont), function(x) {
-    CairoPDF(file = plot_nam_cont[[x]], width = 10, height = 15, family = "NotoSans-Condensed")
+    cairo_pdf(filename = plot_nam_cont[[x]], 
+              width = 10, height = 12, 
+              family = "NotoSans-Condensed")
     #reordering the tracks so the genome access track is near the top
     plotTracks(comb_cont[[x]][c(1, 10, 2:9)],
                main = title_cont[[x]],
@@ -231,12 +235,12 @@ for(contrast in contrasts) {
                col.title = "black",
                # set font family for y-axis (title)
                fontfamily.title = "NotoSans-Condensed",
+               fontfamily = "NotoSans-Condensed",
                # set font size for y-axis (title)
-               fontsize = 16,
-               #sizes=c(0.5, 0.5, 0.5, 0.7, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75),
-               sizes=c(0.5, 0.5, 0.5, 0.3, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75),
-               from = annot[x,"Start"], 
-               to = annot[x,"End"] 
+               fontsize = 12,
+               sizes=c(0.5, 0.5, 1, 0.3, 1, 1, 1, 1, 1, 1),
+               from = annot$Start[x], 
+               to = annot$End[x] 
     )
     graphics.off()
   })

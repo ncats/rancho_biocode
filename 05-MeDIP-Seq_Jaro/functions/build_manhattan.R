@@ -6,7 +6,7 @@ build_manhattan <- function(data, filename) {
   df <- data %>%
     # select gene symbol, chromosome,
     # start of gene and adj p-value
-    dplyr::select(c(symbol, chromosome_name_medip, start_position_medip, padj)) %>%
+    dplyr::select(c(gene_anotatr, gene_active, chromosome_name_medip, start_position_medip, padj)) %>%
     # mutate X and Y chr to numeric
     mutate(chromosome_name_medip = ifelse(grepl("X", chromosome_name_medip), gsub("X", "23", chromosome_name_medip),
                              ifelse(grepl("Y", chromosome_name_medip), gsub("Y", "24", chromosome_name_medip), gsub("chr", "", chromosome_name_medip)))) %>%
@@ -17,15 +17,22 @@ build_manhattan <- function(data, filename) {
   # separate genes onto separate lines
   df <- rbindlist(lapply(1:nrow(df), function(x) {
     y <- df[x,]
-    if (!grepl(";", y$symbol)) {
+    anot <- unique(unlist(strsplit(y$gene_anotatr, "; ")))
+    act <- unique(unlist(strsplit(y$gene_active, "; ")))
+    all <- c(anot, act)
+    all <- all[all != "NA"]
+    
+    if (length(all) == 1) {
+      y <- y %>%
+        dplyr::select(-gene_active) %>%
+        mutate(gene_anotatr = all)
       names(y) <- c("symbol", "seqnames", "start", "padj")
       return(y)
     } else {
-      sym <- unlist(strsplit(y$symbol, "; "))
-      seq <- unlist(strsplit(y$chromosome_name_medip, "; "))
-      st <- unlist(strsplit(y$start_position_medip, "; "))
-      p <- rep(y$padj, length(sym))
-      z <- data.frame("symbol" = as.character(sym),
+      seq <- rep(y$chromosome_name_medip, length(all))
+      st <- rep(y$start_position_medip, length(all))
+      p <- rep(y$padj, length(all))
+      z <- data.frame("symbol" = as.character(all),
                       "seqnames" = as.character(seq),
                       "start" = as.numeric(st),
                       "padj" = as.numeric(p)) %>%
@@ -38,11 +45,18 @@ build_manhattan <- function(data, filename) {
   # from someone else's code)
   names(df) <- c("SNP", "CHR", "BP", "P")
   
+  # ggplot alternative: easier to adapt
+  # update goi to remove: phlda2, h19, peg3, peg10
+  # as they are not in the output
+  goi <- toupper(c("elf5", "dlk1", "ube3a", "igf2",
+                   "zfat", "cdkn1c", "proser2-as1",
+                   "phlda2", "h19", "peg3", "peg10"))
   
   df <- df %>%
     mutate_at(c(1:2), as.character) %>%
     mutate_at(c(3:4), as.numeric) %>%
-    arrange(CHR)
+    arrange(CHR) %>%
+    mutate(CHR = as.numeric(CHR))
   
   # this code is used to plot the chrom
   # correctly in manhattan plot (taken from 
@@ -55,35 +69,17 @@ build_manhattan <- function(data, filename) {
     left_join(df, .) %>%
     arrange(CHR, BP) %>%
     mutate(BPcum = BP + tot) %>%
-    filter(!is.na(P)) %>%
-    mutate(is_annotate=ifelse(P < 0.05, "yes", "no"))
-  
+    mutate(is_highlight = ifelse(SNP %in% goi & P < 0.05, "yes", "no"),
+           is_annotate=ifelse(P < 0.05, "yes", "no"))
+  # df$CHR <- factor(df$CHR, levels = c("1", "2", "3", "4", "5", 
+  #                                     "6", "7", "8", "9", "10",
+  #                                     "11", "12", "13", "14", "15",
+  #                                     "16", "17", "18", "19", "20",
+  #                                     "21", "22", "23", "24"))
   sub <- df %>%
     group_by(CHR, is_annotate) %>%
     summarise(n = n())
-  sub$CHR <- factor(sub$CHR, levels = c("1", "2", "3", "4", "5", 
-                                      "6", "7", "8", "9", "10",
-                                      "11", "12", "13", "14", "15",
-                                      "16", "17", "18", "19", "20",
-                                      "21", "22", "23", "24"))
-  
-  if (nrow(sub) != 48) {
-    sub <- sub %>% 
-      mutate(CHR = as.numeric(CHR)) %>%
-      arrange(mixedsort(CHR))
-    sub <- sub %>%
-      mutate(col = ifelse(CHR %in% c(1, 5, 9, 13, 17, 21) & is_annotate == "no", "gray32",
-                    ifelse(CHR %in% c(1, 5, 9, 13, 17, 21) & is_annotate == "yes", "gray72",
-                      ifelse(CHR %in% c(2, 6, 10, 14, 18, 22) & is_annotate == "no", "dark blue",
-                        ifelse(CHR %in% c(2, 6, 10, 14, 18, 22) & is_annotate == "yes", "blue",      
-                          ifelse(CHR %in% c(3, 7, 11, 15, 19, 23) & is_annotate == "no", "gray32",
-                            ifelse(CHR %in% c(3, 7, 11, 15, 19, 23) & is_annotate == "yes", "gray72",
-                              ifelse(CHR %in% c(4, 8, 12, 16, 20, 24) & is_annotate == "no", "dark blue",
-                                ifelse(CHR %in% c(4, 8, 12, 16, 20, 24) & is_annotate == "yes", "blue", NA)))))))))
-
-  } else {
-    sub$col <- rep(c("gray32", "gray72", "dark blue", "blue"), times = round(nrow(sub)/4))[1:nrow(sub)]
-  }
+  sub$col <- rep(c("gray32", "gray72", "dark blue", "blue"), times = round(nrow(sub)/4))[1:nrow(sub)]
   sub <- unlist(sapply(1:nrow(sub), function(x) rep(sub$col[x], sub$n[x])))
   df <- df %>% 
     arrange(CHR, is_annotate) %>%
@@ -92,17 +88,24 @@ build_manhattan <- function(data, filename) {
   
   # determine axis plotting - taken from
   # someone else's code
-  axisdf <- df %>%
-    dplyr::group_by(CHR) %>%
-    dplyr::summarize(center=( max(BPcum) + min(BPcum) ) / 2 ) %>%
-    arrange(center) %>%
-    mutate(CHR = c(1:24))
+  axisdf <- df %>% group_by(CHR) %>% summarize(center=( max(BPcum) + min(BPcum) ) / 2 )
   
   df$CHR <- factor(df$CHR, levels = c("1", "2", "3", "4", "5", 
                                       "6", "7", "8", "9", "10",
                                       "11", "12", "13", "14", "15",
                                       "16", "17", "18", "19", "20",
                                       "21", "22", "23", "24"))
+  
+  # this labels goi only once, rather than 
+  # multiple times in the plot
+  labs <- subset(df, is_highlight == "yes") %>%
+    arrange(SNP)
+  sum <- labs %>% group_by(SNP) %>% summarise(n = n())
+  vec <- unlist(lapply(1:length(sum$SNP), function(x) {
+    y <- c(sum$SNP[x], rep("", sum$n[x] - 1))
+  }))
+  labs$upd <- vec
+  
   # this is for all chromosomes
   p <- ggplot(df, aes(x = BPcum, y = -log10(P))) + 
     geom_point( aes(color = df$all_col), alpha=0.8, size=1.3) +
@@ -117,6 +120,12 @@ build_manhattan <- function(data, filename) {
     # drop axis at 0,0 pos on y-axis
     scale_y_continuous(expand = c(0, 0)) +
     
+    # color goi with orange points
+    geom_point(data=subset(df, is_highlight=="yes"), color = "red", size = 2, alpha = 0.5) +
+    
+    # repel labels so text does not overlap
+    geom_label_repel(data = labs, aes(label = upd), size=4) +
+    
     # customize the theme:
     theme_bw() +
     theme( 
@@ -127,8 +136,6 @@ build_manhattan <- function(data, filename) {
       panel.grid.minor.x = element_blank(),
       axis.title = element_text(size = 20, face = "bold"),
       axis.text = element_text(size = 14, color = "black")
-    ) + xlab("Chromosome") + ylim(c(0, max(-log10(df$P)) + 1)) +
-    mytheme
-    
+    ) + xlab("Chromosome") + ylim(c(0, max(-log10(df$P)) + 1))
   ggsave(paste("./adj_data/plots/manhattan/", filename, sep = ""), plot = p, width = 14, height = 10, units = "in")
 }

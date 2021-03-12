@@ -50,7 +50,7 @@ anno_track <- function(st = c(0, 1, 2),
     fontcolor.group = "#000000",
     # sets font size for annotation of peak 
     # (diff than title size)
-    #fontsize.group = 24,
+    fontsize.group = 24,
     # specify font family
     fontfamily.group = "NotoSans-Condensed",
     # specify border color for peak
@@ -147,9 +147,24 @@ dat_track <- function(file, gen, style, title, chr, lim) {
 # functions (i.e. so your code isn't super long
 # and redundant)
 multi_comp_cov <- function(file, bam_comps, ranges, bam_file) {
-  a1_lsb_cov <- lapply(1:nrow(file), function(x) {
+  y <- lapply(1:nrow(file), function(x) {
     unlist(lapply(1:length(bam_comps), function(y) {
-      build_cov(chr = gsub("chr", "", file$chr[x]),
+      build_cov(chr = paste("chr", file$chromosome_name_medip[x], sep = ""),
+                range1 = ranges[[x]][[1]],
+                range2 = ranges[[x]][[2]],
+                file = bam_file[y])
+    }), recursive = F)
+  })
+}
+
+# these 2 fxns allow you to iterate thru many 
+# comparisons of the build_cov and dat_track 
+# functions (i.e. so your code isn't super long
+# and redundant)
+multi_comp_cov2  <- function(file, bam_comps, ranges, bam_file) {
+  y <- lapply(1:nrow(file), function(x) {
+    unlist(lapply(1:length(bam_comps), function(y) {
+      build_cov(chr = paste("chr", file$chr[x], sep = ""),
                 range1 = ranges[[x]][[1]],
                 range2 = ranges[[x]][[2]],
                 file = bam_file[y])
@@ -179,71 +194,81 @@ multi_comp_dat <- function(file, bam_comps) {
 
 # combine data input for plot track across
 # multi-comparisons
-plot_data <- function(itrack_files, atrack_files, dat_files, gtrack_files, 
-                      raw_data, btrack_files, contrast, titles) {
+plot_data <- function(itrack_files, atrack_files, dat_files, gtrack_files,
+                      raw_data, contrast, titles, loc) {
   # pool itrack and atrack
   first <- lapply(1:length(itrack_files), function(x)
-    list(itrack_files[[x]], atrack_files[[x]], gtrack_files[[x]], btrack_files[[x]], dat_files[[x]]))
-  first <- lapply(first, function(x) unlist(x))
-
-  #set a contrast name
-  cont <- paste(contrast, collapse = " vs ")
+    list(itrack_files[[x]], atrack_files[[x]]))
+  # then add data track and genome axis track
+  comb <- lapply(1:length(dat_files), function(x)
+    c(first[[x]], dat_files[[x]], gtrack_files[[x]]))
   
-  title_cont <- lapply(1:length(titles), function(x)
-    paste(cont, " at ",titles[[x]], " Gene", sep = ""))
+  #con <- gsub(" at ", "", contrast)
+  dir.exists(file.path("./adj_data/plots/", paste(loc, "/", contrast, sep = "")))
+  
+  ifelse(!dir.exists(file.path("./adj_data/plots/", paste(loc, "/", contrast, sep = ""))),
+         dir.create(file.path("./adj_data/plots/", paste(loc, "/", contrast, sep = ""))), FALSE)
   
   # create plot name
   plot_nam <- lapply(1:length(titles), function(x)
-    paste("./adj_data/plots/top10/", contrast, "_", titles[[x]], ".pdf", sep = "")
+    paste(paste("./adj_data/plots/", loc, "/", contrast, "/", sep = ""), contrast, "_", titles[[x]], ".pdf", sep = "")
   )
   
-  if (length(first[[1]]) == 9) {
     # create final combined pdf
-    lapply(1:length(first), function(x) {
-      cairo_pdf(filename = plot_nam[[x]], 
-                width = 10, height = 12, 
-                family = "NotoSans-Condensed")
-      #CairoPDF(file = plot_nam[[x]], width = 20, height = 20, family = "NotoSans-Condensed")
-      plotTracks(first[[x]],
-                 main = title_cont[[x]],
+    lapply(1:length(comb), function(x) {
+      CairoPDF(file = plot_nam[[x]], width = 20, height = 20, family = "NotoSans-Condensed")
+      plotTracks(comb[[x]],
+                 main = titles[[x]],
                  # specify color of feature for peaks
-                 #`Peak ` = "red",
+                 `Peak ` = "red",
                  # set fill for y-axis (title)
                  background.title = "white",
                  # set font color for y-axis (title)
                  col.title = "black",
                  # set font family for y-axis (title)
                  fontfamily.title = "NotoSans-Condensed",
-                 fontfamily = "NotoSans-Condensed",
                  # set font size for y-axis (title)
-                 fontsize = 12,
-                 sizes = c(0.5, 1.5, 1.4, 1.3, 1.3, 1.3, 1.3, 1.3, 1.3)
-      ) 
-      graphics.off()
-    })
-  } else {
-    # create final combined pdf
-    lapply(1:length(first), function(x) {
-      cairo_pdf(filename = plot_nam[[x]], 
-                width = 10, height = 12, 
-                family = "NotoSans-Condensed")
-      #CairoPDF(file = plot_nam[[x]], width = 20, height = 20, family = "NotoSans-Condensed")
-      plotTracks(first[[x]],
-                 # set font family for y-axis (title)
-                 main = title_cont[[x]],
-                 # specify color of feature for peaks
-                 #`Peak ` = "red",
-                 # set fill for y-axis (title)
-                 background.title = "white",
-                 # set font color for y-axis (title)
-                 col.title = "black",
-                 fontfamily.title = "NotoSans-Condensed",
-                 fontfamily = "NotoSans-Condensed",
-                 # set font size for y-axis (title)
-                 fontsize = 12,
-                 sizes=c(0.5, 1.5, 1.4, 1.3, 1.3, 1.3, 1.3, 1.3, 1.3, 1.3)
+                 fontsize = 16,
+                 sizes=c(0.5, 0.5, 1, 1, 1, 1, 1, 1, 0.5)
       )
       graphics.off()
     })
-  }
+}
+
+# combine data input for plot track across
+# multi-comparisons
+plot_data2 <- function(itrack_files, atrack_files, dat_files, gtrack_files,
+                      btrack_files, raw_data, contrast, titles) {
+  # pool itrack and atrack
+  first <- lapply(1:length(itrack_files), function(x)
+    list(itrack_files[[x]], atrack_files[[x]], gtrack_files[[x]], btrack_files[[x]]))
+  # then add data track and genome axis track
+  comb <- lapply(1:length(dat_files), function(x)
+    c(first[[x]], dat_files[[x]]))
+  
+  # create plot name
+  plot_nam <- lapply(1:length(titles), function(x)
+    paste(paste("./adj_data/plots/all_top10/", contrast, "/", sep = ""), contrast, "_", titles[[x]], ".pdf", sep = "")
+  )
+  
+  # create final combined pdf
+  lapply(1:length(comb), function(x) {
+    CairoPDF(file = plot_nam[[x]], width = 28, height = 28)
+    plotTracks(comb[[x]],
+               main = gsub("_", " ", titles[[x]]),
+               # specify color of feature for peaks
+               #`Peak ` = "red",
+               # set fill for y-axis (title)
+               background.title = "white",
+               # set font color for y-axis (title)
+               col.title = "black",
+               # set font family for y-axis (title)
+               fontfamily.title = "NotoSans-Condensed",
+               fontfamily = "NotoSans-Condensed",
+               # set font size for y-axis (title)
+               fontsize = 20,
+               sizes=c(0.5, 1.2, 1.4, 1.3, 1.3, 1.3, 1.3, 1.3, 1.3, 1.3, 1.3, 1.3, 1.3)
+    )
+    graphics.off()
+  })
 }

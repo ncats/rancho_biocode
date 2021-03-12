@@ -7,11 +7,11 @@ library(tidyverse)
 #CONSTANTS
 outfileBase <- "03_NCATS_ATAC"
 
-mytheme <- theme(plot.title = element_text(lineheight = 0.8, face = "bold", size = 20),
-                 axis.text = element_text(size = 14),
-                 axis.title = element_text(face = "bold", colour = "Black", size = 16),
-                 legend.text = element_text(colour = "Black", size = 12),
-                 legend.title = element_text(colour = "Black", size = 14))
+mytheme <- theme(plot.title = element_text(lineheight = 0.8, size = 20, family = "NotoSans-Bold"), 
+                 axis.text = element_text(size = 14, family = "NotoSans-Condensed"),
+                 axis.title = element_text(colour = "Black", size = 16, family = "NotoSans-Bold"),
+                 legend.text = element_text(colour = "Black", size = 12, family = "NotoSans-Condensed"),
+                 legend.title = element_text(colour = "Black", size = 14, family = "NotoSans-Condensed"))
 
 #get merged region data
 #NOTE: you'll need to point this to the correct directory as I did not 
@@ -20,8 +20,9 @@ mytheme <- theme(plot.title = element_text(lineheight = 0.8, face = "bold", size
 df <- read.xlsx("./data/mergedRegions/014JNIH_ATAC_mergedregs.xlsx")
 
 #adjust treatment names to differentiate from NCRM5 later
-colnames(df) <- gsub("NCRM5-D30", "NCRM5_D30", colnames(df))
-colnames(df) <- gsub("NCRM5-D50", "NCRM5_D50", colnames(df))
+colnames(df) <- gsub("NCRM5-D30", "D30", colnames(df))
+colnames(df) <- gsub("NCRM5-D50", "D50", colnames(df))
+colnames(df) <- gsub("NCRM5", "D0", colnames(df))
 
 
 #get presence absence for each bio rep, then count number of present
@@ -69,9 +70,8 @@ p <- ggplot(df, aes(x = Filter, y = NumberOfGenes)) +
 p
 
 #save plot
-plotName <- paste(outfileBase, "NumberAfterFiltering.pdf", sep = ".")
-ggsave(filename = paste("./figures/qc/", plotName, sep = ""), 
-       device = "pdf", 
+plotName <- paste(outfileBase, "NumberAfterFiltering.png", sep = ".")
+ggsave(filename = paste("./figures/qc/", plotName, sep = ""),
        plot =  p, 
        height = 6, 
        width = 8, 
@@ -97,6 +97,8 @@ df %<>%
 colnames(df) <- gsub("_ATAC_hg38::1.Norm.Counts","", colnames(df))
 colnames(df) <- gsub(".*_","", colnames(df))
 colnames(df) <- gsub("_|-", ".", colnames(df))
+colnames(df) <- gsub("NCRM5.D", "D", colnames(df))
+colnames(df) <- gsub("NCRM5", "D0", colnames(df))
 
 #write table
 write.table(df, "./data/deseq/014JNIH_ATAC_mergedregs_NormCount_Filtered.txt", row.names = F, sep = "\t")

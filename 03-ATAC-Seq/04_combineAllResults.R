@@ -5,7 +5,9 @@ library(openxlsx)
 library(org.Hs.eg.db)
 library(VennDetail)
 library(tidyverse)
+library(data.table)
 
+GenesToRemove <- fread("./data/refs/Genes_To_Remove_filter.txt")
 
 #CONSTANTS
 outfileBase <- "03_NCATS_ATAC_"
@@ -19,14 +21,11 @@ contrasts <- gsub("_atacseq_genes.txt", "", contrasts)
 #so that all files are not needed for contrast labels
 contrasts <- c("A1_vs_NCRM5", "D30_vs_A1", "D30_vs_NCRM5", "D50_vs_D30", "D50_vs_NCRM5", "LSB_vs_A1", "LSB_vs_NCRM5")
 
-mytheme <- theme(plot.title = element_text(lineheight = 0.8, face = "bold", size = 20),
-                 axis.text = element_text(size = 14),
-                 axis.title = element_text(face = "bold", colour = "Black", size = 16),
-                 legend.text = element_text(colour = "Black", size = 12),
-                 legend.title = element_text(colour = "Black", size = 14))
-
-#get genes to remove
-GenesToRemove <- read.delim("./data/refs/Genes_To_Remove_filter.txt")
+mytheme <- theme(plot.title = element_text(lineheight = 0.8, size = 20, family = "NotoSans-Bold"), 
+                 axis.text = element_text(size = 14, family = "NotoSans-Condensed"),
+                 axis.title = element_text(colour = "Black", size = 16, family = "NotoSans-Bold"),
+                 legend.text = element_text(colour = "Black", size = 12, family = "NotoSans-Condensed"),
+                 legend.title = element_text(colour = "Black", size = 14, family = "NotoSans-Condensed"))
 
 #the files above are large, just use this section
 #write.table(annot, "./data/NCATS_annot.txt", row.names = F, sep = "\t")
@@ -35,7 +34,7 @@ annot <- read.delim("./data/refs/NCATS_annot.txt", header = T, sep = "\t")
 #remove chr, start, and end, because they can be confused with the 
 #merged region information, which will be different than gene annotation
 annot %<>%
-  select(-Chr, -Start, -End)
+  dplyr::select(-Chr, -Start, -End)
 
 #initialize data frame 
 allDf <- data.frame()
@@ -52,9 +51,10 @@ for(contrast in contrasts) {
   df <- read.delim(file = paste("./data/combined/", contrast, "_atacseq_genes.txt", sep = ""), header = T, sep = "\t")
   
   
-  #remove parentheses around genes and distances over 10kb away
+  #remove parantheses around genes and distances over 10kb away
   #we can filter these later
   df %<>%
+    mutate_if(is.factor, as.character) %>%
     separate_rows(Distance, Gene, sep = ",", convert = TRUE) %>%
     mutate(Gene = gsub("[()]", "", Gene),
            Distance = gsub("[()]", "", Distance),
@@ -64,7 +64,7 @@ for(contrast in contrasts) {
                               TRUE ~ Source)) %>%
     filter(abs(Distance) <= 10000, 
            #Source != "ChipDuo", 
-           !Gene %in% GenesToRemove$V1) 
+           !Gene %in% GenesToRemove$Gene) 
   
   #Take the most significant hit for each gene
   sigDf <- df %>%
@@ -78,7 +78,8 @@ for(contrast in contrasts) {
            Contrast = contrast)
   
   allDf <- rbind(allDf, sigDf)
-  
+  allDf$Contrast <- gsub("NCRM5.D", "D", allDf$Contrast)
+  allDf$Contrast <- gsub("NCRM5", "D0", allDf$Contrast)  
 }
 
 #write table with all results

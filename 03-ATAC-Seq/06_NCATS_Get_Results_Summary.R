@@ -7,11 +7,11 @@ library(tidyverse)
 outfileBase <- "03_NCATS_ATAC_"
 
 #set a common theme for plotting
-mytheme <- theme(plot.title = element_text(lineheight = 0.8, face = "bold", size = 20),
-                 axis.text = element_text(size = 14),
-                 axis.title = element_text(face = "bold", colour = "Black", size = 16),
-                 legend.text = element_text(colour = "Black", size = 12),
-                 legend.title = element_text(colour = "Black", size = 14))
+mytheme <- theme(plot.title = element_text(lineheight = 0.8, size = 20, family = "NotoSans-Bold"), 
+                 axis.text = element_text(size = 14, family = "NotoSans-Condensed"),
+                 axis.title = element_text(colour = "Black", size = 16, family = "NotoSans-Bold"),
+                 legend.text = element_text(colour = "Black", size = 12, family = "NotoSans-Condensed"),
+                 legend.title = element_text(colour = "Black", size = 14, family = "NotoSans-Condensed"))
 
 #read in all results file
 df <- read.delim("./results/03_NCATS_ATAC_AllCombinedResults.txt", header = T, sep = "\t")

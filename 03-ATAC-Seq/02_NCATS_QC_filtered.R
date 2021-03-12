@@ -11,11 +11,11 @@ library(tidyverse)
 outfileBase <- "03_NCATS_ATAC"
 
 #set a common theme for plotting
-mytheme <- theme(plot.title = element_text(lineheight = 0.8, face = "bold", size = 20),
-                 axis.text = element_text(size = 14),
-                 axis.title = element_text(face = "bold", colour = "Black", size = 16),
-                 legend.text = element_text(colour = "Black", size = 12),
-                 legend.title = element_text(colour = "Black", size = 14))
+mytheme <- theme(plot.title = element_text(lineheight = 0.8, size = 20, family = "NotoSans-Bold"), 
+                 axis.text = element_text(size = 14, family = "NotoSans-Condensed"),
+                 axis.title = element_text(colour = "Black", size = 16, family = "NotoSans-Bold"),
+                 legend.text = element_text(colour = "Black", size = 12, family = "NotoSans-Condensed"),
+                 legend.title = element_text(colour = "Black", size = 14, family = "NotoSans-Condensed"))
 
 
 #read in the filtered data containing the normalized counts from Active Motif
@@ -49,6 +49,7 @@ all(rownames(doe) == rownames(topComponents))
 
 #merge treatment information into the PCA data
 topComponents <- cbind(topComponents, doe)
+topComponents$Treatment <- factor(topComponents$Treatment, levels = c("D0", "A1", "LSB", "D30", "D50"))
 
 #get percentages from PCA
 summary(pca)
@@ -65,9 +66,8 @@ for(i in names(group_cols)){
     mytheme
   print(p)
   
-  plotName <- paste(outfileBase, "PCA", i, "pdf", sep = ".")
+  plotName <- paste(outfileBase, "PCA", i, "png", sep = ".")
   ggsave(filename = paste("./figures/pca/", plotName, sep = ""), 
-         device = "pdf", 
          plot =  p, 
          height = 6, 
          width = 8, 
@@ -95,7 +95,6 @@ rownames(tsne) <- row.names(doe)
 tsne <- cbind(tsne, doe)
 all(rownames(doe) == rownames(tsne))
 
-
 for(i in names(group_cols)){
   p <- ggplot(tsne, aes_string("V1", "V2", color = i)) +
     geom_point(size=2) +
@@ -104,9 +103,8 @@ for(i in names(group_cols)){
     mytheme
   print(p)
   
-  plotName <- paste(outfileBase, "tSNE", i, "pdf", sep = ".")
-  ggsave(filename = paste("./figures/tsne/", plotName, sep = ""), 
-         device = "pdf", 
+  plotName <- paste(outfileBase, "tSNE", i, "png", sep = ".")
+  ggsave(filename = paste("./figures/tsne/", plotName, sep = ""),
          plot =  p, 
          height = 6, 
          width = 8, 

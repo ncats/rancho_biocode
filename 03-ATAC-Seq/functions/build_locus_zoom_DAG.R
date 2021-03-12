@@ -45,6 +45,7 @@ anno_track <- function(st = c(0, 1, 2),
     groupAnnotation = "group", 
     # specify loc of text annotation for peak
     just.group = "above",
+    fontfamily.group = "NotoSans-Condensed",
     # sets font color for annotation of peaks to black
     fontcolor.group = "#000000",
     # sets font size for annotation of peak 

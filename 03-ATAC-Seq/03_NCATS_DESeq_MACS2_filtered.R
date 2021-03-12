@@ -10,11 +10,11 @@ library(tidyverse)
 outfileBase <- "03_NCATS_ATAC"
 
 #set a common theme for plotting
-mytheme <- theme(plot.title = element_text(lineheight = 0.8, face = "bold", size = 20),
-                 axis.text = element_text(size = 14),
-                 axis.title = element_text(face = "bold", colour = "Black", size = 16),
-                 legend.text = element_text(colour = "Black", size = 12),
-                 legend.title = element_text(colour = "Black", size = 14))
+mytheme <- theme(plot.title = element_text(lineheight = 0.8, size = 20, family = "NotoSans-Bold"), 
+                 axis.text = element_text(size = 14, family = "NotoSans-Condensed"),
+                 axis.title = element_text(colour = "Black", size = 16, family = "NotoSans-Bold"),
+                 legend.text = element_text(colour = "Black", size = 12, family = "NotoSans-Condensed"),
+                 legend.title = element_text(colour = "Black", size = 14, family = "NotoSans-Condensed"))
 
 #read in the filtered data containing the normalized counts from Active Motif
 df <- read.delim("./data/deseq/014JNIH_ATAC_mergedregs_NormCount_Filtered.txt", header = T, row.names = 1, sep = "\t")
@@ -51,19 +51,19 @@ rownames(doe) <- doe$Sample
 doe %<>% select(Treatment)
 
 #set NCRM5 as the reference group
-doe$Treatment <- relevel(doe$Treatment, ref = "NCRM5")
+doe$Treatment <- relevel(doe$Treatment, ref = "D0")
 
 #manually specify contrasts because we are not interested in ALL
 #pairwise comparisons
 contrasts <- list()
-contrasts[[1]] <- c("Treatment", "A1", "NCRM5")
+contrasts[[1]] <- c("Treatment", "A1", "D0")
 contrasts[[2]] <- c("Treatment", "LSB", "A1")
-contrasts[[3]] <- c("Treatment", "LSB", "NCRM5")
-contrasts[[4]] <- c("Treatment", "NCRM5.D30", "NCRM5")
-contrasts[[5]] <- c("Treatment", "NCRM5.D50", "NCRM5")
-contrasts[[6]] <- c("Treatment", "NCRM5.D50", "NCRM5.D30")
-contrasts[[7]] <- c("Treatment", "NCRM5.D50", "A1")
-contrasts[[8]] <- c("Treatment", "NCRM5.D30", "A1")
+contrasts[[3]] <- c("Treatment", "LSB", "D0")
+contrasts[[4]] <- c("Treatment", "D30", "D0")
+contrasts[[5]] <- c("Treatment", "D50", "D0")
+contrasts[[6]] <- c("Treatment", "D50", "D30")
+contrasts[[7]] <- c("Treatment", "D50", "A1")
+contrasts[[8]] <- c("Treatment", "D30", "A1")
 
 #set up the DESeq object
 dds <- DESeqDataSetFromMatrix(countData = df,
@@ -122,7 +122,7 @@ for (i in 1:length(contrasts)) {
   cn <- paste(contrasts[[i]], collapse = "_")
   
   #set file name
-  fn <- paste("./results/deseq/contrasts/", outfileBase, cn, "DESeqMACS.txt", sep = "")
+  fn <- paste("./results/deseq/contrasts/", outfileBase, "_", cn, "_DESeqMACS.txt", sep = "")
   
   #write the results from each contrast to their own individual files
   write.table(resShrink, file = fn, row.names = F, sep = "\t", quote = F)
@@ -144,7 +144,7 @@ colnames(ResAllContrasts) <- gsub("Treatment_", "", colnames(ResAllContrasts))
 #calculated from all samples. This converts the name of the first one to
 #"BaseMean" and removes the rest, then annotate with the merged region info
 ResAllContrasts %<>%
-  rename(BaseMean = A1_NCRM5.baseMean) %>%
+  dplyr::rename(BaseMean = A1_D0.baseMean) %>%
   select(BaseMean, contains("log2FoldChange"), contains("lfcSE"), contains("pvalue"), contains("padj")) %>%
   rownames_to_column("Merged.Region") %>%
   right_join(mRegs, ., by = "Merged.Region")
