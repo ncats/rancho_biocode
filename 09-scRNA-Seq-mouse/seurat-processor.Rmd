@@ -1,0 +1,64 @@
+---
+title: "Mouse DRG scRNA Processing"
+output: html_document
+params:
+  sample: "082120DRG"
+---
+
+```{bash, eval=FALSE}
+// This Rmd can be rendered to html by either defining the sample name above or
+as a parameter
+
+Rscript -e "rmarkdown::render('seurat-processing.Rmd', params = list(sample='082120DRG'))"
+
+// This processor also requires a config.yml file where filtering and cluster params are defined
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache.lazy = FALSE)
+library(Seurat)
+library(tidyverse)
+library(glue)
+library(clustree)
+source("functions.R")
+
+library(future)
+plan(strategy = "multicore")
+set.seed(123)
+
+plot_dir <- "plot"
+objects_dir <- "objects"
+# c("082120DRG", "101920DRG","103020DRG","110220DRG","111220DRG")
+```
+
+```{r vars}
+vars <- yaml::yaml.load_file("config.yml")[[params$sample]]
+print(params$sample)
+print(vars)
+```
+
+```{r import}
+# read in the entire dataset and create seurat object with >500 nFeature cells
+s <- Seurat::Read10X(glue("cellranger-counts-and-reports/{params$sample}/outs/raw_feature_bc_matrix/"))
+s <- CreateSeuratObject(s, assay = "RNA", project = params$sample, min.features = 500)
+
+# select mitochondrial genes, lower case "mt-" for mouse symbols
+s[["percent.mt"]] <- PercentageFeatureSet(s, pattern = "^mt-")
+# saveRDS(s, glue("{objects_dir}/{params$sample}-full.RDS"))
+
+print(glue::glue("{dim(s)[[2]]} cells in {params$sample} object") )
+print(head(s@meta.data))
+```
+
+```{r plot_distributions}
+VlnPlot(s, features = c("nFeature_RNA","nCount_RNA","percent.mt"))
+plot_cutoffs(s, filterset = vars$filters)
+print(glue::glue("{dim(s)[[2]]} cells in filtered {params$sample} object") )
+```
+
+```{r processing}
+# apply the cell filter specifications
+s_processed <- apply_filterset(s, filterset = vars$filters)
+saveRDS(s_processed, glue("{objects_dir}/{params$sample}-filtered.RDS"))
+```
+

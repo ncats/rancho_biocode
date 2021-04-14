@@ -1,0 +1,50 @@
+082120DRG:
+  filters:
+    nFeature_RNA:
+      min: 1200
+      max: 6000
+    percent.mt:
+      max: 12
+  cluster:
+    umap_dims: 26
+    resolution: 0.3
+101920DRG:
+  filters:
+    nFeature_RNA:
+      min: 1200
+      max: 7500
+    percent.mt:
+      max: 7.5
+  cluster:
+    umap_dims: 27
+    resolution: 0.3
+103020DRG:
+  filters:
+    nFeature_RNA:
+      min: 1500
+      max: 6000
+    percent.mt:
+      max: 5
+  cluster:
+    umap_dims: 27
+    resolution: 0.3
+110220DRG:
+  filters:
+    nFeature_RNA:
+      min: 1500
+      max: 5500
+    percent.mt:
+      max: 7
+  cluster:
+    umap_dims: 30
+    resolution: 0.4
+111220DRG:
+  filters:
+    nFeature_RNA:
+      min: 1000
+      max: 5500
+    percent.mt:
+      max: 6
+  cluster:
+    umap_dims: 30
+    resolution: 0.4
