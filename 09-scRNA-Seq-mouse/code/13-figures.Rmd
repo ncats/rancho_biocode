@@ -1,0 +1,163 @@
+---
+title: "Untitled"
+output: html_document
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(Seurat)
+library(tidyverse)
+library(glue)
+
+seur <- readRDS("../data/objects/filtered-merged-umap-modules.RDS")
+```
+
+```{r }
+DimPlot(seur, reduction = "umap", 
+        group.by = "seurat_clusters", 
+        label = T) +
+  theme(legend.position = 'none',
+        aspect.ratio = 1) +
+  DimPlot(seur, reduction = "umap", 
+          group.by = "orig.ident") +
+  theme(legend.position = 'bottom',
+        aspect.ratio = 1) +
+  patchwork::plot_layout(ncol=1)
+
+ggsave("plots/umap-by-cluster-and-sample.png", width=8, height=9)
+```
+
+
+```{r}
+
+top <- read_tsv(glue("data/tables/merged-dex-results.tsv"), 
+                col_types = cols(.default=col_double(),
+                                 gene = col_character())) %>% 
+  arrange(p_val_adj, desc(avg_log2FC)) %>% 
+  group_by(cluster) %>% 
+  slice(1:10) %>% 
+  arrange(-cluster)
+
+DotPlot(seur, features = unique(top$gene)) + 
+  coord_flip() + 
+  labs(title=glue("Top 10 DE features from each cluster"),
+       y="Cluster Identity",
+       x="Gene name" )+
+  theme(plot.title = element_text(hjust = 0.5),
+        aspect.ratio = 4,
+        axis.text.y = element_text(size=8))
+
+cns_glia <- c("Cnn3", "Avil", "Glul", "S100a8", "Vim", "Gja1", "Kcnj10", "Sox2", "Sox10", "Isl1", "Calca", "Tubb3")
+# DotPlot(seur, features = cns_glia) + 
+#   coord_flip() + 
+#   labs(title=glue("Genes of interest"),
+#        y="Cluster Identity",
+#        x="Gene name" )+
+#   theme(plot.title = element_text(hjust = 0.5),
+#         aspect.ratio = 0.5,
+#         axis.text.y = element_text(size=8))
+
+FeaturePlot(seur, features = cns_glia) 
+
+```
+
+```{r sgc_module}
+seur <- AddModuleScore(seur,
+                           features = list(`sgc` = c("Kcnj10","Gja1", "Gjb1", "Vim","Avil", "Calca", "Glul")),
+                           name = c("SGC"))
+names(seur@meta.data) <- gsub("SGC1","Satellite_Glial_Cells",names(seur@meta.data))
+
+FeaturePlot(seur, features = "Satellite_Glial_Cells")
+ggsave("plots/ipsc-feature-plots-SGC.png", height = 6, width = 6)
+
+VlnPlot(seur, features = "Satellite_Glial_Cells")
+
+ggsave("plots/ipsc-violin-plots-SGC.png", height = 4, width = 6)
+
+FeaturePlot(seur, features = "S100a8")
+ggsave("plots/ipsc-feature-plots-S100a8.png", height = 6, width = 6)
+
+```
+
+
+```{r}
+# plot the composition of each temporal sample across clusters
+ggplot(seur@meta.data, aes(x=seurat_clusters, fill=orig.ident)) +
+  geom_bar()
+ggsave("plots/cluster-composition.png")
+
+seur@meta.data %>% 
+  group_by(seurat_clusters, orig.ident) %>% 
+  count() %>% 
+  group_by(seurat_clusters) %>% 
+  mutate(total = sum(n),
+         frac = n/total) %>% 
+  ggplot(aes(x=seurat_clusters, y=frac,  fill=orig.ident)) +
+  geom_bar(stat = 'identity')
+ggsave("plots/cluster-composition-freq.png")
+
+
+```
+
+```{r}
+# cluster 0 is primarily glial cells, which is expected to include a subset of SGC
+FeaturePlot(seur, features = c("Sox10", "Glia", "Astrocyte", "Potassium_ion_channel"), ncol = 1, label = T) 
+ggsave("plots/ipsc-feature-plots-cluster0.png", height = 12, width = 4)
+
+VlnPlot(seur, features = c("Sox10", "Glia", "Astrocyte", "Potassium_ion_channel"), ncol = 1)  
+ggsave("plots/ipsc-violin-plots-cluster0.png", height = 12, width = 4)
+
+
+```
+
+```{r}
+# cluster 1 appears to be neural crest progenitors
+set <- c("Neural.Crest", "Late_neural_progenitor")
+FeaturePlot(seur, features = set, ncol = 1, label = T) 
+ggsave("plots/ipsc-feature-plots-cluster1.png", height = 8, width = 4)
+
+VlnPlot(seur, features = set, ncol = 1)  
+ggsave("plots/ipsc-violin-plots-cluster1.png", height = 8, width = 4)
+
+```
+
+
+
+
+```{r}
+# cluster 5 appears to be mainly mature neuron populations
+set <- c("Neuronal_marker", "Sesory_neuron", "Nociceptor", 
+         "Calca", "Tubb3", "Avil")
+FeaturePlot(seur, features = set, ncol = 3, label = T) 
+ggsave("plots/ipsc-feature-plots-cluster5.png", height = 6, width = 12)
+
+VlnPlot(seur, features = set, ncol = 3)  
+ggsave("plots/ipsc-violin-plots-cluster5.png", height = 6, width = 8)
+
+```
+
+```{r}
+# cluster 5 appears to be mainly mature neuron populations
+set <- c("Cnn3")
+FeaturePlot(seur, features = set, label = T)
+ggsave("plots/ipsc-feature-plots-Calponin3.png", height = 6, width =6 )
+
+VlnPlot(seur, features = set)  
+ggsave("plots/ipsc-violin-plots-Calponin3.png", height = 6, width = 6)
+
+```
+
+```{r}
+# initial inspection of satellite glia locations from Pei-hsuan marker panel
+# import markers and annotate module scores
+satglia_markers <- read_tsv("../reference/satglia-mapped-markers.tsv")
+seur <- AddModuleScore(seur, features = list(satglia_markers$mouse), name = "SatGlia")
+
+FeaturePlot(seur, features = "SatGlia1", label = T)
+ggsave("../data/plots/ipsc-feature-plots-SatGlia.png", height = 6, width =6 )
+
+VlnPlot(seur, features = "SatGlia1")  
+ggsave("../data/plots/ipsc-violin-plots-SatGlia.png", height = 6, width = 6)
+```

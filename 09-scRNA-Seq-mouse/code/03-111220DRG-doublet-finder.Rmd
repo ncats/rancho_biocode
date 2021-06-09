@@ -1,0 +1,100 @@
+---
+title: "Mouse DRG Doublet Finder Processing"
+output: html_notebook
+output_dir: "../data/doublet-finder-reports/"
+params:
+  sample: "111220DRG"
+---
+
+## Doublet Finder
+
+Method for pK Identification without ground-truth calls using [DoubletFinder](https://github.com/chris-mcginnis-ucsf/DoubletFinder)
+
+```{r echo=FALSE}
+library(Seurat)
+library(DoubletFinder)
+library(tidyverse)
+library(glue)
+library(future)
+options(future.globals.maxSize = +Inf)
+plan(strategy = "multicore")
+```
+
+## Background
+
+> Performs pN-pK parameter sweeps on a 10,000-cell subset of a
+> pre-processed Seurat object. Will use all cells if Seurat object
+> contains less than 10,000 cells. Results are fed into
+> 'summarizeSweep' and 'find.pK' functions during optimal pK parameter
+> selection workflow. Parameters tested: pN = 0.05-0.3, pK =
+> 0.0005-0.3
+
+ 
+```{r}
+seur <- readRDS(glue("../data/objects/{params$sample}-filtered.RDS"))
+seur <- NormalizeData(seur)
+seur <- FindVariableFeatures(seur)
+seur <- ScaleData(seur, features = rownames(seur), verbose = F)
+seur <- RunPCA(seur, features = VariableFeatures(object = seur))
+seur <- RunUMAP(seur, dims = 1:10)
+DimPlot(seur, reduction = "umap")
+```
+
+```{r}
+library(clustree)
+seur <- FindNeighbors(seur, dims = 1:10)
+seur <- FindClusters(seur, resolution = seq(0.1,1,0.1))
+clustree(seur, prefix = "RNA_snn_res.")
+
+sweep_res_list <- paramSweep_v3(seur, PCs = 1:10, sct = FALSE)
+sweep_stats <- summarizeSweep(sweep_res_list, GT = FALSE)
+bcmvn <- find.pK(sweep_stats)
+
+# parse maximum pK
+best_pk <- bcmvn[which(max(bcmvn$BCmetric)[[1]]==bcmvn$BCmetric),"pK"]
+best_pk <- as.numeric(best_pk)
+```
+
+
+```{r}
+UMAP_RESOLUTION <- 0.3
+homotypic.prop <- modelHomotypic(seur@meta.data[[glue("RNA_snn_res.{UMAP_RESOLUTION}")]]) 
+nExp_poi <- round(0.075*nrow(seur@meta.data))  ## Assuming 7.5% doublet formation rate - tailor for your dataset
+nExp_poi.adj <- round(nExp_poi*(1-homotypic.prop))
+print(glue("We define {nExp_poi.adj} homotypic doublets"))
+
+# calculation with homotypic population estimates
+xx <- doubletFinder_v3(seur, 
+                       PCs = 1:10, 
+                       pN = 0.25, 
+                       pK = best_pk, 
+                       nExp = nExp_poi.adj, 
+                       reuse.pANN = FALSE, 
+                       sct = FALSE)
+
+df_class_name <- grep("DF.classification",names(xx@meta.data), value = T)
+table(xx@meta.data[[df_class_name]])
+
+dbl <- FetchData(xx,vars = df_class_name)
+DimPlot(xx, reduction = "umap", group.by  = df_class_name)
+
+# without homotypic calls
+hh <- doubletFinder_v3(seur, 
+                       PCs = 1:10, 
+                       pN = 0.25, 
+                       pK = best_pk, 
+                       nExp = 0, 
+                       reuse.pANN = FALSE, 
+                       sct = FALSE)
+
+df_class_name <- grep("DF.classification",names(hh@meta.data), value = T)
+table(hh@meta.data[[df_class_name]])
+
+dbl <- FetchData(hh,vars = df_class_name)
+DimPlot(hh, reduction = "umap", group.by  = df_class_name)
+
+```
+
+
+
+

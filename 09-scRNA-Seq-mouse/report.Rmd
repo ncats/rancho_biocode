@@ -1,0 +1,161 @@
+---
+title: "scRNA-Seq Analysis of Mouse Development"
+author: "Dan Rozelle"
+date: "4/2/2021"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+
+# Executive Summary 
+
+The National Institute of Health (NIH) National Center for Advancing Translational Sciences (NCATS) collaborated on a study to explore mouse development in the dorsal root ganglia. Five time points were collected throughout development.   
+
+For this analysis, Rancho proposes to run Cell Ranger to align, filter, count barcodes, count UMI and aggregate multiple runs of Cell Ranger count if necessary. Rancho will review and troubleshoot the Seurat workflow for all time points and identify the optimal resolution for clustering. There may be a higher than normal number of doublet droplets; therefore, we will run the created Seurat object through DoubletFinder. We will estimate the predicted doublets in the dataset in comparison to the Seurat object without running DoubletFinder. After running DoubletFinder, we will perform differential gene expression analysis using Seurat and over-representation analysis using the Broad Institute’s GSEA program. Lastly, we will run Slingshot to build single-cell trajectories using pseudotime.  
+
+## Input data 
+
+Chromium Single Cell sequencing using the i7 single index plates were provided as 160 individual paired-end FASTQ files. Five distinct samples were indexed according to Table I and sequenced using 4 barcode sequences, which have balanced base composition. Each of these barcodes was sequenced across 4 lanes. (5 samples * 4 barcodes * 4 lanes * 2 ends = 160 files)
+
+#### **Sample sheet**
+
+Sample    |I7_Index_ID	|Barcodes
+:--------- | :---------	| :--------
+082120DRG | SI-GA-G1	| ATGAATCT,GATCTCAG,CCAGGAGC,TGCTCGTA
+101920DRG | SI-GA-G9	| TAGGACGT,ATCCCACA,GGAATGTC,CCTTGTAG
+103020DRG | SI-GA-C9	| GCGCAGAA,ATCTTACC,TATGGTGT,CGAACCTG
+110220DRG | SI-GA-D9	| AGGAGATG,GATGTGGT,CTACATCC,TCCTCCAA
+111220DRG | SI-GA-H9	| ACACTGTT,CAGGATGG,GGCTGAAC,TTTACCCA
+
+While explicit sample preparation information was not provided, it has been inferred from the sample labeling and publications from the source laboratory (Ahmet Hoke) that these are purified dorsal root ganglia explant samples from healthy mice at 5 time-points across 12-weeks (unknown starting status).
+
+# Solution
+
+## Processing FASTQ to produce UMI counts
+
+Single cell feature counts for a single library were generated using the following cellranger count script. This was performed by first downloading a current prebuilt reference library for [*mus musculus* mm10](https://support.10xgenomics.com/single-cell-gene-expression/software/downloads/latest) assembly.
+
+```
+wget https://cf.10xgenomics.com/supp/cell-exp/refdata-gex-mm10-2020-A.tar.gz
+code/run-cellranger-count.sh
+```
+
+Results from cellrange count quanlity summary metrics indicated that all samples were good quality and suitable for downstream analysis.
+
+#### **Table 1 - Cell Ranger Count Summary Stats**
+
+Sample    |Est. Cell Number |Mean Reads / Cell    |Median Genes / Cell   |Reads Mapped Confidently to Genome         
+:---------|:---------       |:---------           |:----------------     |:----            
+082120DRG | 11,198          | 53,351              |2,290                 | 87.3%
+101920DRG | 11,926          | 77,566              |2,491                 | 93.3%
+103020DRG | 9,876           | 64,663              |3,350                 | 92.7%
+110220DRG | 8,342           | 62,208              |3,275                 | 93.1%
+111220DRG | 15,515          | 54,126              |2,670                 | 93.2%
+
+## Seurat sample preprocessing
+
+In order to facilitate streamlined preprocessing of individual sample each was subject to import, calculation of percent mitochodrial content per cell, application of cutoffs related to umi counts and mito content, scaleing and normalization. These operations were applied using the ```seurat-processor.Rmd``` through ```code/01b-render-all-seurat-processors.R```. This allows not only consistent processing settings but also sample-specific logging along with customized diagnostic plots. 
+
+Since sequencing operations on each sample are nonstandard, filtering criteria were configured using ```config.yml```. This includes min/max cutoffs for nFeature_RNA and percent.mt in addition to number of umap dimensions for clustering and cluster resolution.
+
+Outputs preprocesing reports can be found at:
+
+```{bash echo=FALSE}
+tree data/seurat-preprocesing-reports/
+```
+
+## Doublet detection
+
+Based on information from the Dr. Hoke’s lab and NCATS, it is possible that experimentalists may have overloaded the chip, potentially producing excessive doublet droplets (droplets with more than one cell). To determine if doublets were problematic in the dataset, we utilized the [DoubletFinder](https://github.com/chris-mcginnis-ucsf/DoubletFinder) package in R. 
+
+The DoubletFinder method includes 4 distinct steps:
+
+1. Generate artificial doublets from existing scRNA-seq data
+2. Pre-process merged real-artificial data
+3. Perform PCA and use the PC distance matrix to find each cell's proportion of artificial k nearest neighbors (pANN)
+4. Rank order and threshold pANN values according to the expected number of doublets
+
+Following recommended steps from this package, individual samples were imported as Seurat objects, normalized and scaled before applying the DoubleFinder methods. ```02-doublet-finder.R``` was run interactively for all 5 samples in order to optimize pK and nExp. This included a pN-pK parameter sweeps on a 10,000-cell subset of a pre-processed Seurat object. Will use all cells if Seurat object contains less than 10,000 cells. Results are fed into ```summarizeSweep()``` and ```find.pK()``` functions during optimal pK parameter selection workflow. Parameters tested: pN = 0.05-0.3, pK = 0.0005-0.3
+
+**Results** from the Doublet Finder algorithm did not successfully identify any likely doublet cells. The analysis was confirmed with two separate approaches: with and without estimation of homotypic doublet cells. Since DoubletFinder is insensitive to homotypic doublets the estimation process is entirely based on estimated frequency within clusters, and highly subject to input parameters. The package authors consider doublet number estimates based on Poisson statistics with and without homotypic doublet proportion adjustment to 'bookend' the real detectable doublet rate, however in these cases where we see a range from 0 (without homotypic) through 25% cell count (the value used to estimate homotypic populations) that this package has identified no actual doublets. In response to this finding we are proceeding with this analysis without adjusting for doublet species cells. Full results can be found on individual doublet finder reports.
+
+```{bash echo=FALSE}
+tree data/doublet-finder-reports/
+```
+
+## Main Seurat object processor
+
+After individual samples were ingested, filtered and considered for doublet exclusion they were aggregated into a single seurat object and normalized. This process was implemented as ```code/01c-merge.R```. Processing included the following major steps:
+
+1. Merge into a single seurat
+2. Score  each cell for S and G2M cell cycle effects that are included in the regression/normalization steps. See ```code/cell-cycle-testing.R``` and Apr 1, 2021 presentation for details. 
+3. NormalizeData, FindVariableFeatures, ScaleData
+4. RunPCA followed by Elbow plot to identify important principal components
+    - ![](data/plots/pca-scatterplots.png)
+    - ![](data/plots/elbow.png)
+5. RunUMAP follwed by DimPlot 
+    - ![](data/plots/umap-by-sample.png)
+6. Identify optimal cluster resolution using clustree
+    - ![](data/plots/clustree-plot_low-end.png)
+    - ![](data/plots/umap-0.03.png)
+7. Output from this main processing is stored as ```objects/filtered-merged-umap.RDS```
+
+## Differential expression
+
+Once an optimal Seurat resolution had been selected (0.03), we ran differential gene expression analysis in Seurat using the FindMarkers function in Seurat. This was performed for each cluster in a cluster-vs-all contrast model. Since a list of targeted genes was not explicitly provided we report the top 20 genes per cluster. 
+
+```{bash}
+ls data/plots/dex-top-dotplot*
+```
+
+## General enrichment analysis
+
+We followed-up the DGE analysis with over-representation analysis using msigdb and clusterprofiler in R exploring the GO gene sets and KEGG. This work was defined by the ```code/06-enrichr.R``` script and includes msigdb categories "KEGG", "C5"(Go terms) as well as modules defined for the iPSC cluster profiler tool at NCATs. Results are summarized on the ```data/table/enriched-sets.tsv```
+
+
+```{r}
+read_tsv("data/tables/enriched-sets.tsv", col_types = cols(
+  cluster = col_double(),
+  hits = col_double(),
+  ID = col_character(),
+  Description = col_character(),
+  GeneRatio = col_character(),
+  BgRatio = col_character(),
+  pvalue = col_double(),
+  p.adjust = col_double(),
+  qvalue = col_double(),
+  geneID = col_character(),
+  Count = col_double() )) %>% 
+  slice(1:10) %>% 
+  select(-geneID)
+```
+
+```{bash}
+ls data/plots/go*
+ls data/plots/kegg*
+```
+
+
+## Module conversion and scoring
+
+Lastly, to better understand the identity or cell type for each cluster, we ran Seurat’s AddModuleScore function, using NCATS’ list of known cell markers from a previously created iPSC profiler for each cell separation approach. The AddModuleScore calculates the average expression for each cluster subtracted by the aggregated expression of control feature sets. Positive expression levels indicate a higher expression level than random. We will use the expression levels to broadly assign each cluster to potential identities (cell type). 
+
+```{bash}
+ls data/plots/ipsc*
+```
+
+## Trajectory inference
+
+Lastly, we ran Slingshot for single-cell trajectory analysis. The goal of slingshot is to use clusters of cells to uncover global structure and convert these to pseudotime. To accomplish this work we utilized the *dynverse* set of R-packages in conjunction with provided code from Claire Malley to run Slingshot and extract pseudotime metrics. 
+
+This analysis yielded some productive findings across the annotated umap clusters. This roughly followed a trajectory along neuronal precursors (cluster 1), glial/astral/SGC cells (cluster 0, the largest) and splits into several types of maturing nociceptors (cluster 5) and likely alternative developmental neuronal cell types (clusters 3,6) 
+
+![](data/plots/ti-umap-cluster.png)
+When an unsupervised pseudotime estimation is plotted on these cells we see a natural progression.
+
+![](data/plots/ti-umap-pseudotime.png)
+
+
+## Pseudotype-based differential modeling
+
+After Slingshot was run, we explored temporally expressed genes using the tradeSeq package. For each gene, we fit a general additive model (GAM) using a negative binomial noise distribution to model relationships between gene expression and pseudotime. After running the GAM model, we tested for significant associations between expression and pseudotime using the associationTest. 
