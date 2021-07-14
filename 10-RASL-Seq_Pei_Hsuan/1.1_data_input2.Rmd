@@ -1,0 +1,820 @@
+---
+title: "GAM_model2"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+```{r clear workspace}
+rm(list = ls(all.names = TRUE)) #will clear all objects includes hidden objects.
+gc() #free up memory and report the memory usage.
+
+#function to create dir
+check.dir=function(path){
+if (!dir.exists(path)) {dir.create(path)}
+}
+check.dir('data/processed_data/')
+
+```
+
+```{r load libraries}
+library(tidymv)
+library(readr)
+library(tidyverse)
+library(mgcv)
+library(broom)
+library(caret)
+library(gamclass)
+library(GGally)
+library(zeallot)
+library(DEGreport)
+library(psych)
+library(DescTools)
+library(foreach)
+library(doParallel)
+library(hrbrthemes)
+registerDoParallel(cores=8)
+#library(nplr)
+
+#CONSTANTS
+mytheme <- theme(plot.title = element_text(lineheight = 0.8, face = "bold", size = 20),
+axis.text = element_text(size = 14),
+axis.title = element_text(face = "bold", colour = "Black", size = 16),
+legend.text = element_text(colour = "Black", size = 12),
+legend.title = element_text(colour = "Black", size = 14))
+
+```
+
+
+Data inputs: 
+
+1. qHTS_361 experimental dataset: This is the main dataset which includes raw data values plus qHTS (hill's equation dose response curve fitting) parameters. 
+2. probes_sub: These are filtered probes to be used in the final analysis as requested by NCATS
+3. noci_bulk: bulk RNA-seq data as response variable to fit the model
+
+
+```{r load_data}
+#load qHTS experimental dataset
+qHTS_361 <- readr::read_tsv(file = 'data/RASLSeq_data_to_Rancho/361_20200213.txt')
+
+#load probes to filter
+probes_sub  <-  xlsx::read.xlsx(file = 'data/RASLSeq_data_to_Rancho/2021_RASL_Probe_cleanup_update.xlsx', sheetIndex = 1,as.data.frame = T,header = T)
+names(probes_sub)[1]  <-  'Oligo ID'
+
+#read bulk RNA-seq data to fit the model
+noci_bulk  <-  readr::read_csv(file = 'data/RASLSeq_data_to_Rancho/Merged_nociceptor_LFC.csv')
+names(noci_bulk)[1]  <- "gene_symbol"
+
+#modify the dataset to filter for probes, select relevant cols, add bulk RNAseq data and make cols to factors for GAM modelling
+
+#require probes have 'Y/y' annotation on them; there are some labelled X which is presumably ones that were mistaken labelled instead of Y
+
+qHTS_subset <- qHTS_361 %>% select(c(1,4,7,13,19,31,34:45,56:62,66:72, 97,99)) %>%
+  left_join(y = probes_sub[c(1,2,7)], by = 'Oligo ID' ) %>%
+  filter(Probe.validation %in% c('Y','y'))  %>% select(c(33:35, 19:32, 5)) #%>% rename_all(list(~make.names(., unique = T))) 
+
+# usual sanity checks
+#table(table(qHTS_subset$`Oligo ID`))
+#total of 563 oligo IDs selected
+
+#unique(qHTS_361$`Gene Symbol`[!qHTS_361$`Gene Symbol` %in% unique(noci_bulk$`Gene Symbol`)])
+#535 oligo IDs remain after inner join
+
+#check NAs in cols 
+#colSums(!is.na(qHTS_subset))
+```
+
+QC and data filtration
+
+```{r initial checks and filters}
+#consider those genes which have all 7 conc and ratio values 
+qm2 = qHTS_subset %>% drop_na()
+
+#filter for good curve classes only, so those that are greater than 0.5 curve class
+qm2 = qm2[which(abs(qm2$`Curve Class`) >= 0.5),]
+
+#only select the required columns
+qm2 = qm2[c(1:17)]
+
+#remove spaces and make unique names
+qm2$Treatment = as.factor(gsub(" ", "_", qm2$Treatment))
+
+qm3 = qm2 #[apply(qm2[c(4:17)],1, function(row) all(row != 0)), ] #remove rows containing zeroes 
+# sanity check for rows containing zeroes in ratios - 15 rows
+# qm2[which(!(apply(qm2[c(4:17)],1, function(row) all(row != 0))) == 'TRUE'),]
+
+#remove row with possible error values in conc./ratios
+qm2 = qm2[!((qm2$Oligo_gene == '961_POU5F1') & (qm2$Treatment == 'A_83-01' )),]
+qm2 = qm2[!((qm2$Oligo_gene == '518_NODAL') & (qm2$Treatment == 'A_83-01' )),]
+
+#pivot
+qm4 = qm2 %>% pivot_longer(!c(1:3), names_to ="terms", values_to ="values")
+
+#list of compounds to consider 
+compy_list = unique(qm3$Treatment)
+
+proc <- 'data/processed_data/GAM_models_genes_noprop_ccfiltered_64genes'
+
+check.dir(proc)
+
+#this doesnt need parallel as the GAM models use parallelisation
+for (compy in compy_list){
+
+  am=qm4[qm4$Treatment == compy,]
+
+  pathy = file.path(proc, unique(am$Treatment))
+  check.dir(path =pathy)
+ 
+  for (i in unique(am$Oligo_gene)){
+    ab = am[am$Oligo_gene == i,]
+    # conc = ab[ab$set == 'Conc'][5:11]
+    # ratio = ab[ab$set == 'Ratio'][5:11]
+    df1 = ab[grep(pattern = "Conc", x = ab$terms ),]
+    df2 = ab[grep(pattern = "Ratio", x = ab$terms ),]
+    df2 = df2[c(4,5)]
+    names(df2) = c('Ratios', 'R_values')
+    df = cbind(df1, df2 )
+    df1 <- df %>% mutate(values = log10(values), R_values = (R_values)) 
+    #gam model without converting R_values to proportions 
+    gam_mod <- gam(R_values ~s(values, k=6), data =df1, method = "REML",control =gam.control(nthreads=12))
+    file1 = file.path(pathy, glue::glue('GAM_mod.', unique(ab$Treatment),'_' ,i ))
+    saveRDS(object = gam_mod,file = file1)
+    message(paste0("processing comp/gene: ",unique(ab$Treatment),"/",i))
+  }
+}
+
+
+```
+
+Consider for all those treatments, where every treatment has the the same list 
+of GAM models or gene lists (using a common gene list) 
+
+```{r}
+
+###considering only 64 genes that are common to all 12 treatment conditions
+
+
+################all genes common to all 12 compounds
+
+common_genes = Reduce(f = intersect,list(qm2$Gene.symbol[qm2$Treatment== unique(qm2$Treatment)[1]],
+                                         qm2$Gene.symbol[qm2$Treatment== unique(qm2$Treatment)[2]], 
+                                         qm2$Gene.symbol[qm2$Treatment== unique(qm2$Treatment)[3]],
+                                         qm2$Gene.symbol[qm2$Treatment== unique(qm2$Treatment)[4]],
+                                         qm2$Gene.symbol[qm2$Treatment== unique(qm2$Treatment)[5]],
+                                         qm2$Gene.symbol[qm2$Treatment== unique(qm2$Treatment)[6]],
+                                         qm2$Gene.symbol[qm2$Treatment== unique(qm2$Treatment)[7]],
+                                         qm2$Gene.symbol[qm2$Treatment== unique(qm2$Treatment)[8]],
+                                         qm2$Gene.symbol[qm2$Treatment== unique(qm2$Treatment)[9]],
+                                         qm2$Gene.symbol[qm2$Treatment== unique(qm2$Treatment)[10]],
+                                         qm2$Gene.symbol[qm2$Treatment== unique(qm2$Treatment)[11]],
+                                         qm2$Gene.symbol[qm2$Treatment== unique(qm2$Treatment)[12]]))
+
+
+```
+
+```{r gam pred func}
+#function to predict from GAM model
+#input: gam model and new concentration value
+#output: predicted LFC value
+pred <- function(x, gam){
+  predy <- mgcv::predict.gam(gam,newdata = data.frame('values'=x))
+  return(as.numeric(predy))
+}
+
+# sanity checks
+#genes_subset=unique(qm2$Gene.symbol)
+
+noci = noci_bulk[which(noci_bulk$gene_symbol %in% common_genes),]
+
+#consider only those in all 12 compounds to have sanity check
+#qm5 = qm2[qm2$Gene.symbol %in% noci$gene_symbol,]
+```
+
+Processing 2-treatment combinations: 
+
+
+```{r read gam models for each compound - 2 combn}
+#functions to predict LFC (a/b) values for each dose (X1/X2) for a 2 treatment combination
+
+# input: sapply across all genes corresponding to multiple GAM fitted curves, to predict LFC (a/b) values for each dose (X1/X2) for a 2 treatment combination
+
+#output: least square cost function that takes in multiple Concentration values (low/high) for subsequent build function  
+
+eqn_func_all <- function(X, T, y) {
+  a.pred <- sapply(T[[1]], function(a) { pred(x=X[1], gam=a) })
+  b.pred <- sapply(T[[2]], function(a) { pred(x=X[2], gam=a) })
+  x <- a.pred + b.pred
+  return(abs(y-x))
+}
+
+#function to be optimized/ passed to optim function 
+# this needs to be separated as we build on this function for multiple combinations and for optim formats
+
+buildcostfunc <- function(T, y){
+  function(x){
+    sum(eqn_func_all(x,T,y))
+  }}
+  
+#
+# function to select all gam models of a compound in a list
+
+# sanity checks: set seed and explore just a few genes
+#set.seed(11611)
+#select = sample(intersect(qm2$Gene.symbol, noci$`Gene Symbol`), 10)
+
+# this loop selects required saved gam models from the folders specified and adds them to a list of lists according to the compounds of interest (gam_list)
+
+# input: list of required GAM models common to the common gene list
+
+proc <- 'data/processed_data/GAM_models_genes_noprop_ccfiltered_64genes'
+
+gam_list = list()
+for (n in 1:length(compy_list)){
+  comp=levels(compy_list)[n]
+  message(comp)
+  pathy = file.path(proc, comp)
+  
+  #list files in each treatment folder
+  gamfiles <- list.files(path =pathy,pattern = "GAM")
+  #gather all genes in the folder
+  gl_gam=sapply(strsplit(gamfiles, '_'), '[',4)
+  gl_gam=data.frame(gl_gam)
+  names(gl_gam) = "gene_symbol"
+  #save noci data
+  merged_noci=merge(gl_gam, noci, by = "gene_symbol", all.x = TRUE)
+  merged_noci=merged_noci[complete.cases(merged_noci),]
+  path2 = file.path(pathy, 'noci_subset')
+  check.dir(path2)
+  file1 = file.path(pathy = path2, glue::glue(comp,'_merged_noci.RDS'))
+  saveRDS(object = merged_noci,file = file1)
+
+  #only select genes fitted with GAM models that are present in noci data
+  comm=intersect(gl_gam$gene_symbol,noci$gene_symbol)
+  #select common saved gam models 
+  select_ind=lapply(comm, function(x) grep(pattern = paste0(x, "$"), gamfiles))
+  #select only genes with first probe so only 64 models are selected ## other probes can be selected later
+  select_ind=unique(unlist(lapply(select_ind, '[[', 1)))
+  g1 = gamfiles[select_ind]
+  i=1
+  for (m in g1){  
+    gam1 = readRDS(file = file.path(pathy,m))
+    gam_list[[comp]][[i]] = gam1
+    i = i+1
+  }}
+
+
+#function to select required conc. values used in the experiments according to treatment type
+#input: data - dataframe to select concentration values; comp: list of treatments
+#output: concentration value list per treatment
+
+subset_conc=function(data, comp){
+  #subset treatment from dataframe
+  conc_df=data[which(data$Treatment == comp),][1,]
+  #return a list of log10 conc. values
+  conc_values=log10(t(conc_df[grep('Conc',colnames(conc_df))]))
+  return(conc_values)
+}
+
+proc <- 'data/processed_data/GAM_models_genes_noprop_ccfiltered_64genes'
+
+
+# for loop for selecting concentration doses of each comp.
+conc_list <- foreach(n=1:length(compy_list),
+  .final = function(x) setNames(x, levels(compy_list))) %dopar% {
+  comp=levels(compy_list)[n]
+  print(comp)
+  subset_conc(data=qm2, comp = comp)
+  }
+
+# function that select GAM models with common genes from response and explanatory variable for model fitting and optimization
+# input: saved gam models, response noci day 8 RNA-seq data subset of common genes
+# output: optimized parameters in result lists 
+
+#make a combination of compounds
+m=2
+comp_comb = combn(length(compy_list), m)
+result_list = list()
+
+result_list <- foreach(
+  n = 1:ncol(comp_comb),
+  .final = function(x) {
+    names <- c()
+    for (i in 1:ncol(comp_comb)) {
+      names[i] <- paste(
+        levels(compy_list)[comp_comb[,i]],
+        collapse = '+')
+    }
+    setNames(x, names)}) %dopar% {
+
+  comp_index = levels(compy_list)[comp_comb[,n]]
+  T = gam_list[comp_index]
+  y = readRDS(file = file.path(proc, comp_index[1], 'noci_subset', paste0(comp_index[1], '_merged_noci.RDS')))
+  #keep only 64 common genes for solving cost function combinations
+  y = y[!duplicated(y$gene_symbol),]
+  f <- buildcostfunc(T = T,y= y$H9noc_D8)
+
+  #initial value within domain
+  x_par = c(0,0)
+  Conc_values = conc_list[comp_index]
+  result <- optim(par = x_par, f,
+    lower = c(Conc_values[[1]][1], Conc_values[[2]][1]),
+    upper = c(Conc_values[[1]][7], Conc_values[[2]][7]),
+    method = "L-BFGS-B")
+
+  message('--processed ', n, ' of ', ncol(comp_comb))
+  result
+}
+
+#save result_list
+proc_1  <- 'data/processed_data/GAM_models_genes_noprop_ccfiltered_64genes/results/result_lists/'
+dir.create('data/processed_data/GAM_models_genes_noprop_ccfiltered_64genes/results/', showWarning = FALSE)
+dir.create('data/processed_data/GAM_models_genes_noprop_ccfiltered_64genes/results/result_lists/', showWarning = FALSE)
+check.dir(proc_1)
+file1 = file.path(proc_1, glue::glue('GAM_mod.64','_' ,'result_list.RDS' ))
+saveRDS(object = result_list,file = file1)
+
+
+
+############################################
+
+```
+
+List for 2-treatment combinations: 
+Check top 2-treatment combns
+
+```{r capture top results - 2 combn}
+# capture Par and values as these will help find best treatment combns
+
+pars=t(data.frame(lapply(result_list, function(x) x[c('par')])))
+values=t(data.frame(lapply(result_list, function(x) x[c('value')])))
+convergences=t(data.frame(lapply(result_list, function(x) x[c('convergence')])))
+
+rownames(pars) = names(result_list)
+rownames(values) = names(result_list)
+rownames(convergences) = names(result_list)
+
+
+#check convergence
+#remove non-zero convergences
+
+#result_list[which(convergences ==0)]conc_list
+values1 = data.frame(values[which(convergences ==0),])
+
+names(values1) = paste0('values_', '64com_genes')
+values1 = values1 %>% arrange(values1[names(values1)])
+
+#top-10/ top 10 percentile combinations with lowest difference
+head(values1)
+
+#save result_list
+proc_1 <- 'data/processed_data/GAM_models_genes_noprop_ccfiltered_64genes/results/result_lists/'
+check.dir(proc_1)
+file1 = file.path(proc_1, glue::glue('GAM_mod.64', '_' ,'values1.RDS' ))
+saveRDS(object = values1,file = file1)
+
+```
+
+Processing 3-treatment combinations: 
+
+```{r 3 combn}
+
+eqn_func_all <- function(X, T, y) {
+  a.pred <- sapply(T[[1]], function(a) { pred(x=X[1], gam=a) })
+  b.pred <- sapply(T[[2]], function(a) { pred(x=X[2], gam=a) })
+  c.pred <- sapply(T[[3]], function(a) { pred(x=X[3], gam=a) })
+  x <- a.pred + b.pred + c.pred
+  return(abs(y-x))
+}
+
+#all gene list
+buildcostfunc <- function(T, y){
+  function(x){
+    sum(eqn_func_all(x,T,y))
+  }}
+  
+
+proc <- 'data/processed_data/GAM_models_genes_noprop_ccfiltered_64genes/'
+conc_list = list()
+
+  
+for (n in 1:length(compy_list)){
+  comp=levels(compy_list)[n]
+  print(comp)
+  conc_list[[comp]] = subset_conc(data=qm2, comp = comp)
+  #gam_list[[comp]] = select_gam(proc=proc, comp = comp,n=n, gene_oligo = gene_oligo)
+  }
+
+#make a combination of compounds
+m=3
+comp_comb = combn(length(compy_list), m)
+#n1=noci_bulk[which(noci_bulk$`Gene Symbol` ==  gene_ch),]
+result_list_3 = list()
+
+result_list_3 <- foreach(
+  n = 1:ncol(comp_comb),
+  .final = function(x) {
+    names <- c()
+    for (i in 1:ncol(comp_comb)) {
+      names[i] <- paste(
+        levels(compy_list)[comp_comb[,i]],
+        collapse = '+')
+    }
+    setNames(x, names)}) %dopar% {
+
+  comp_index = levels(compy_list)[comp_comb[,n]]
+  T = gam_list[comp_index]
+  y = readRDS(file = file.path(proc, comp_index[1], 'noci_subset', paste0(comp_index[1], '_merged_noci.RDS')))
+  #keep only 64 common genes for solving cost fucntion combinations
+  y = y[!duplicated(y$gene_symbol),]
+  f <- buildcostfunc(T = T,y= y$H9noc_D8)
+  
+  #initial value within domain
+  x_par = c(0,0,0)
+  Conc_values = conc_list[comp_index]
+  result <- optim(par = x_par, f,
+    lower = c(Conc_values[[1]][1], Conc_values[[2]][1], Conc_values[[3]][1]),
+    upper = c(Conc_values[[1]][7], Conc_values[[2]][7], Conc_values[[3]][7]),
+    method = "L-BFGS-B")
+  
+  message('--processed ', n, ' of ', ncol(comp_comb))
+  result
+}
+
+#save result_list
+proc_1 <- 'data/processed_data/GAM_models_genes_noprop_ccfiltered_64genes/results/result_lists_3'
+check.dir(proc_1)
+file1 = file.path(proc_1, glue::glue('GAM_mod.64','_' ,'result_list_3comb.RDS' ))
+saveRDS(object = result_list_3,file = file1)
+
+
+
+############################################
+```
+
+List for 3-treatment combinations: 
+Check top 3-treatment combns
+
+```{r capture top results - 3 combn}
+pars=t(data.frame(lapply(result_list_3, function(x) x[c('par')])))
+values=t(data.frame(lapply(result_list_3, function(x) x[c('value')])))
+convergences=t(data.frame(lapply(result_list_3, function(x) x[c('convergence')])))
+
+rownames(pars) = names(result_list_3)
+rownames(values) = names(result_list_3)
+rownames(convergences) = names(result_list_3)
+
+
+#result_list[which(convergences ==0)]
+values1_comb3 = data.frame(values[which(convergences ==0),])
+
+names(values1_comb3) = paste0('values_3combn', '64com_genes')
+values1_comb3 = values1_comb3 %>% arrange(values1_comb3[names(values1_comb3)])
+
+#top-10/ top 10 percentile combinations with lowest difference
+head(values1_comb3)
+
+
+#save result_list
+proc_1 <- 'data/processed_data/GAM_models_genes_noprop_ccfiltered_64genes/results/result_lists_3/'
+check.dir(proc_1)
+file1 = file.path(proc_1, glue::glue('GAM_mod.64', '_' ,'values1_comb3.RDS' ))
+saveRDS(object = values1_comb3,file = file1)
+
+```
+
+
+Processing 4-treatment combinations: 
+
+```{r 4 combn}
+
+eqn_func_all <- function(X, T, y) {
+  a.pred <- sapply(T[[1]], function(a) { pred(x=X[1], gam=a) })
+  b.pred <- sapply(T[[2]], function(a) { pred(x=X[2], gam=a) })
+  c.pred <- sapply(T[[3]], function(a) { pred(x=X[3], gam=a) })
+  d.pred <- sapply(T[[4]], function(a) { pred(x=X[4], gam=a) })
+  x <- a.pred + b.pred + c.pred +d.pred
+  return(abs(y-x))
+}
+
+#all gene list
+buildcostfunc <- function(T, y){
+  function(x){
+    sum(eqn_func_all(x,T,y))
+  }}
+  
+
+proc <- 'data/processed_data/GAM_models_genes_noprop_ccfiltered_64genes/'
+conc_list = list()
+
+  
+for (n in 1:length(compy_list)){
+  comp=levels(compy_list)[n]
+  print(comp)
+  conc_list[[comp]] = subset_conc(data=qm2, comp = comp)
+  #gam_list[[comp]] = select_gam(proc=proc, comp = comp,n=n, gene_oligo = gene_oligo)
+  }
+
+#make a combination of compounds
+m=4
+comp_comb = combn(length(compy_list), m)
+#n1=noci_bulk[which(noci_bulk$`Gene Symbol` ==  gene_ch),]
+result_list_4 = list()
+
+
+result_list_4 <- foreach(
+  n = 1:ncol(comp_comb),
+  .final = function(x) {
+    names <- c()
+    for (i in 1:ncol(comp_comb)) {
+      names[i] <- paste(
+        levels(compy_list)[comp_comb[,i]],
+        collapse = '+')
+    }
+    setNames(x, names)}) %dopar% {
+
+  comp_index = levels(compy_list)[comp_comb[,n]]
+  T = gam_list[comp_index]
+  y = readRDS(file = file.path(proc, comp_index[1], 'noci_subset', paste0(comp_index[1], '_merged_noci.RDS')))
+  #keep only 64 common genes for solving cost fucntion combinations
+  y = y[!duplicated(y$gene_symbol),]
+  f <- buildcostfunc(T = T,y= y$H9noc_D8)
+  
+  #initial value within domain
+  x_par = c(0,0,0,0)
+  Conc_values = conc_list[comp_index]
+  result <- optim(par = x_par, f,
+    lower = c(Conc_values[[1]][1], Conc_values[[2]][1], Conc_values[[3]][1], Conc_values[[4]][1]),
+    upper = c(Conc_values[[1]][7], Conc_values[[2]][7], Conc_values[[3]][7], Conc_values[[4]][7]),
+    method = "L-BFGS-B")
+  
+  message('--processed ', n, ' of ', ncol(comp_comb))
+  result
+}
+
+#save result_list
+proc_1 <- 'data/processed_data/GAM_models_genes_noprop_ccfiltered_64genes/results/result_lists_4'
+check.dir(proc_1)
+file1 = file.path(proc_1, glue::glue('GAM_mod.64','_' ,'result_list_4comb.RDS' ))
+saveRDS(object = result_list_4,file = file1)
+
+
+
+############################################
+```
+
+
+List for 4-treatment combinations: 
+Check top 4-treatment combns
+
+```{r capture top results - 4 combn}
+pars=t(data.frame(lapply(result_list_4, function(x) x[c('par')])))
+values=t(data.frame(lapply(result_list_4, function(x) x[c('value')])))
+convergences=t(data.frame(lapply(result_list_4, function(x) x[c('convergence')])))
+
+rownames(pars) = names(result_list_4)
+rownames(values) = names(result_list_4)
+rownames(convergences) = names(result_list_4)
+
+
+#result_list[which(convergences ==0)]
+values1_comb4 = data.frame(values[which(convergences ==0),])
+
+names(values1_comb4) = paste0('values_4combn', '64com_genes')
+values1_comb4 = values1_comb4 %>% arrange(values1_comb4[names(values1_comb4)])
+
+#top-10/ top 10 percentile combinations with lowest difference
+head(values1_comb4)
+
+
+#save result_list
+proc_1 <- 'data/processed_data/GAM_models_genes_noprop_ccfiltered_64genes/results/result_lists_4/'
+check.dir(proc_1)
+file1 = file.path(proc_1, glue::glue('GAM_mod.64', '_' ,'values1_comb4.RDS' ))
+saveRDS(object = values1_comb4,file = file1)
+
+```
+
+# check most frequent compounds in the top 50 (10th percentile) comp. combinations 
+ 
+4 compound combn 
+ 
+```{r top 10 percentile in 4 compounds combn}
+proc_1 <- 'data/processed_data/GAM_models_genes_noprop_ccfiltered_64genes/results/result_lists_4/'
+file1 = file.path(proc_1, glue::glue('GAM_mod.64', '_' ,'values1_comb4.RDS' ))
+values1_comb4 = readRDS(file = file1)
+
+#top 50/ 10th percentile among 492 combns
+comp_toplist=rownames(values1_comb4)[1:50]
+top.1=sapply(strsplit(comp_toplist, "\\+"), '[',1)
+top.2=sapply(strsplit(comp_toplist, "\\+"), '[',2)
+top.3=sapply(strsplit(comp_toplist, "\\+"), '[',3)
+top.4=sapply(strsplit(comp_toplist, "\\+"), '[',4)
+
+toplist=data.frame('comp' = c(top.1, top.2, top.3, top.4))
+
+top_df <- toplist %>% group_by(comp) %>%
+  summarise(counts = n()) %>% arrange(counts)
+
+
+```
+
+3 compound combn 
+
+
+```{r top 10 percentile in 3 compounds combn}
+proc_1 <- 'data/processed_data/GAM_models_genes_noprop_ccfiltered_64genes/results/result_lists_3/'
+file1 = file.path(proc_1, glue::glue('GAM_mod.64', '_' ,'values1_comb3.RDS' ))
+values1_comb3 = readRDS(file = file1)
+
+#top 50 among 3 comp combns
+comp_toplist=rownames(values1_comb3)[1:50]
+top.1=sapply(strsplit(comp_toplist, "\\+"), '[',1)
+top.2=sapply(strsplit(comp_toplist, "\\+"), '[',2)
+top.3=sapply(strsplit(comp_toplist, "\\+"), '[',3)
+
+toplist=data.frame('comp' = c(top.1, top.2, top.3))
+
+top_df3 <- toplist %>% group_by(comp) %>%
+  summarise(counts = n()) %>% arrange(counts)
+
+
+```
+
+2 compound combn 
+
+
+```{r top 10 percentile in 2 compounds combn}
+proc_1 <- 'data/processed_data/GAM_models_genes_noprop_ccfiltered_64genes/results/result_lists/'
+file1 = file.path(proc_1, glue::glue('GAM_mod.64', '_' ,'values1.RDS' ))
+values1_comb2 = readRDS(file = file1)
+
+#top 50 among 2 comp combns
+comp_toplist=rownames(values1_comb3)[1:50]
+top.1=sapply(strsplit(comp_toplist, "\\+"), '[',1)
+top.2=sapply(strsplit(comp_toplist, "\\+"), '[',2)
+
+toplist=data.frame('comp' = c(top.1, top.2))
+
+top_df2 <- toplist %>% group_by(comp) %>%
+  summarise(counts = n()) %>% arrange(counts)
+
+
+```
+
+Barplots depicting top compound combinations with a threshold of 20 
+ 
+```{r top 10 percentile compounds}
+    
+
+p4 = ggplot(top_df, aes(x = comp, y = counts)) + 
+  geom_bar(stat="identity")+ theme_bw() + 
+  theme(axis.text.x = element_text(angle = 75, hjust =1)) + geom_hline(yintercept = 20) +xlab('4-compound combination')
+
+p3 = ggplot(top_df3, aes(x = comp, y = counts)) + 
+  geom_bar(stat="identity")+ theme_bw() + 
+  theme(axis.text.x = element_text(angle = 75, hjust =1)) + geom_hline(yintercept = 20) +xlab('3-compound combination')
+
+p2 = ggplot(top_df2, aes(x = comp, y = counts)) + 
+  geom_bar(stat="identity")+ theme_bw() + 
+  theme(axis.text.x = element_text(angle = 75, hjust =1)) + geom_hline(yintercept = 20) + xlab('2-compound combination')
+
+plot_1 <- 'data/processed_data/plots/'
+check.dir(plot_1)
+pdf(paste0(plot_1, 'barplots_comp_combn.pdf'))
+gridExtra::grid.arrange(p2, p3, p4, nrow=2, ncol=2)
+dev.off()
+
+
+```
+
+sample heatmap
+
+```{r heatmap of all compounds in top 50 percentile}
+
+top_df$col = ''
+
+h4 = ggplot(top_df, aes(x = comp, y = col,fill = counts)) + geom_tile() + scale_fill_gradient(low = "white", high="blue") +theme_ipsum() + theme(axis.text.x = element_text(angle = 75, hjust =1)) # +xlab('4-compound combination')
+
+pdf(paste0(plot_1, 'sample_heatmap_4_comp_combn.pdf'))
+h4
+dev.off()
+
+```
+
+
+
+```{r read result lists - 4 combn}
+
+#read result_list
+proc_1 <- 'data/processed_data/GAM_models_genes_noprop_ccfiltered_64genes/results/result_lists_4'
+check.dir(proc_1)
+file1 = file.path(proc_1, glue::glue('GAM_mod.64','_' ,'result_list_4comb.RDS' ))
+result_list_4 = readRDS(file = file1)
+
+pars=t(data.frame(lapply(result_list_4, function(x) x[c('par')])))
+values=t(data.frame(lapply(result_list_4, function(x) x[c('value')])))
+convergences=t(data.frame(lapply(result_list_4, function(x) x[c('convergence')])))
+
+rownames(pars) = names(result_list_4)
+rownames(values) = names(result_list_4)
+rownames(convergences) = names(result_list_4)
+
+#
+result_list_4_df = data.frame(pars[which(convergences ==0),])
+
+result_list_4_df = apply(result_list_4_df,2, function(x){return(10^x)})
+
+
+result_list_4_df = data.frame(result_list_4_df)
+
+result_list_4_df$residual_values = data.frame(values[which(convergences ==0),])[,1]
+
+result_list_4_df$comp_combn = rownames(result_list_4_df)
+
+colnames(result_list_4_df) = c("opt_conc_comp1","opt_conc_comp2", "opt_conc_comp3","opt_conc_comp4", "residual_values", "comp_combn")
+
+
+proc_1 <- 'data/processed_data/GAM_models_genes_noprop_ccfiltered_64genes/results/result_lists_4/'
+file2 = file.path(proc_1, glue::glue('GAM_mod.64','_' ,'result_list_4comb_dfpars.tsv' ))
+
+readr::write_tsv(result_list_4_df, file2)
+
+
+```
+
+```{r read result lists - 3 combn}
+
+#read result_list
+proc_1 <- 'data/processed_data/GAM_models_genes_noprop_ccfiltered_64genes/results/result_lists_3'
+check.dir(proc_1)
+file1 = file.path(proc_1, glue::glue('GAM_mod.64','_' ,'result_list_3comb.RDS' ))
+result_list_3 = readRDS(file = file1)
+
+pars=t(data.frame(lapply(result_list_3, function(x) x[c('par')])))
+values=t(data.frame(lapply(result_list_3, function(x) x[c('value')])))
+convergences=t(data.frame(lapply(result_list_3, function(x) x[c('convergence')])))
+
+rownames(pars) = names(result_list_3)
+rownames(values) = names(result_list_3)
+rownames(convergences) = names(result_list_3)
+
+#
+result_list_3_df = data.frame(pars[which(convergences ==0),])
+
+result_list_3_df = apply(result_list_3_df,2, function(x){return(10^x)})
+
+
+result_list_3_df = data.frame(result_list_3_df)
+
+result_list_3_df$residual_values = data.frame(values[which(convergences ==0),])[,1]
+
+result_list_3_df$comp_combn = rownames(result_list_3_df)
+
+colnames(result_list_3_df) = c("opt_conc_comp1","opt_conc_comp2", "opt_conc_comp3","residual_values", "comp_combn")
+
+proc_1 <- 'data/processed_data/GAM_models_genes_noprop_ccfiltered_64genes/results/result_lists_3'
+file2 = file.path(proc_1, glue::glue('GAM_mod.64','_' ,'result_list_3comb_dfpars.tsv' ))
+
+readr::write_tsv(result_list_3_df, file2)
+
+
+```
+
+```{r read result lists - 2 combn}
+
+#read result_list
+proc_1 <- 'data/processed_data/GAM_models_genes_noprop_ccfiltered_64genes/results/result_lists/'
+check.dir(proc_1)
+file1 = file.path(proc_1, glue::glue('GAM_mod.64','_' ,'result_list.RDS' ))
+result_list_2 = readRDS(file = file1)
+
+pars=t(data.frame(lapply(result_list_2, function(x) x[c('par')])))
+values=t(data.frame(lapply(result_list_2, function(x) x[c('value')])))
+convergences=t(data.frame(lapply(result_list_2, function(x) x[c('convergence')])))
+
+rownames(pars) = names(result_list_2)
+rownames(values) = names(result_list_2)
+rownames(convergences) = names(result_list_2)
+
+#
+result_list_2_df = data.frame(pars[which(convergences ==0),])
+
+result_list_2_df = apply(result_list_2_df,2, function(x){return(10^x)})
+
+result_list_2_df = data.frame(result_list_2_df)
+
+result_list_2_df$residual_values = data.frame(values[which(convergences ==0),])[,1]
+
+result_list_2_df$comp_combn = rownames(result_list_2_df)
+
+colnames(result_list_2_df) = c("opt_conc_comp1","opt_conc_comp2", "residual_values", "comp_combn")
+
+proc_1 <- 'data/processed_data/GAM_models_genes_noprop_ccfiltered_64genes/results/result_lists/'
+file2 = file.path(proc_1, glue::glue('GAM_mod.64','_' ,'result_list_2comb_dfpars.tsv' ))
+
+readr::write_tsv(result_list_2_df, file2)
+
+```

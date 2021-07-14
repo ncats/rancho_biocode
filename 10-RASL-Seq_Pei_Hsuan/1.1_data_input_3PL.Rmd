@@ -1,0 +1,239 @@
+---
+title: "1.2_data_input_3_4_5PL"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r clear workspace}
+rm(list = ls(all.names = TRUE)) #will clear all objects includes hidden objects.
+gc() #free up memory and report the memory usage.
+
+#function to create dir
+check.dir=function(path){
+if (!dir.exists(path)) {dir.create(path)}
+}
+
+```
+
+## Libraries
+
+```{r load libraries}
+library(readr)
+library(tidyverse)
+library(mgcv)
+library(broom)
+library(caret)
+library(gamclass)
+library(GGally)
+library(zeallot)
+library(DEGreport)
+library(psych)
+library(DescTools)
+library(nplr)
+library(tidymv)
+library(foreach)
+library(xlsx)
+library(doParallel)
+registerDoParallel(cores=10)
+
+#CONSTANTS
+mytheme <- theme(plot.title = element_text(lineheight = 0.8, face = "bold", size = 20),
+axis.text = element_text(size = 14),
+axis.title = element_text(face = "bold", colour = "Black", size = 16),
+legend.text = element_text(colour = "Black", size = 12),
+legend.title = element_text(colour = "Black", size = 14))
+
+ 
+```
+
+
+```{r load data}
+
+#load qHTS experimental dataset
+qHTS_361 <- readr::read_tsv(file = 'data/RASLSeq_data_to_Rancho/361_20200213.txt')
+
+#load probes to filter
+probes_sub  <-  xlsx::read.xlsx(file = 'data/RASLSeq_data_to_Rancho/2021_RASL_Probe_cleanup_update.xlsx', sheetIndex = 1,as.data.frame = T,header = T)
+names(probes_sub)[1]  <-  'Oligo ID'
+
+#read bulk RNSA-seq data to fit the model
+noci_bulk  <-  readr::read_csv(file = 'data/RASLSeq_data_to_Rancho/Merged_nociceptor_LFC.csv')
+names(noci_bulk)[1]  <- "gene_symbol"
+
+#modify the dataset to filter for probes, select relevant cols, add bulk RNAseq data and make cols to factors for GAM modelling
+
+qHTS_subset <- qHTS_361 %>% select(c(1,4,7,13,19,31,34:45,56:62,66:72, 97,99)) %>%
+  left_join(y = probes_sub[c(1,2,7)], by = 'Oligo ID' ) %>%
+  filter(Probe.validation %in% c('Y','y'))  %>% select(c(33:35, 19:32, 5)) #%>% rename_all(list(~make.names(., unique = T))) 
+
+#sanity check
+#total of 563 oligo IDs selected
+#table(table(qHTS_subset$`Oligo ID`))
+
+#535 oligo IDs remain after inner join
+#unique(qHTS_361$`Gene Symbol`[!qHTS_361$`Gene Symbol` %in% unique(noci_bulk$`Gene Symbol`)])
+
+#check NAs in cols 
+#colSums(!is.na(qHTS_subset))
+```
+
+Data QC and filters
+
+```{r}
+#consider those genes which have all 7 conc and ratio values 
+qm2 = qHTS_subset %>% drop_na()
+
+#filter for good curve classes only
+qm2 = qm2[which(abs(qm2$`Curve Class`) >= 0.5),]
+
+qm2 = qm2[c(1:17)]
+
+#remove spaces and make unique names
+qm2$Treatment = as.factor(gsub(" ", "_", qm2$Treatment))
+
+#qm3 = qm2 # Not needed - [apply(qm2[c(4:17)],1, function(row) all(row != 0)), ] #remove rows containing zeroes 
+
+#remove row with possible error values 
+qm2 = qm2[!((qm2$Oligo_gene == '961_POU5F1') & (qm2$Treatment == 'A_83-01' )),]
+qm2 = qm2[!((qm2$Oligo_gene == '518_NODAL') & (qm2$Treatment == 'A_83-01' )),]
+
+qm4 = qm2 %>% pivot_longer(!c(1:3), names_to ="terms", values_to ="values")
+
+```
+
+
+
+```{r common to 12 comp}
+
+################all genes common to all 12 compounds
+
+common_genes = Reduce(f = intersect,list(qm2$Gene.symbol[qm2$Treatment== unique(qm2$Treatment)[1]],
+                                         qm2$Gene.symbol[qm2$Treatment== unique(qm2$Treatment)[2]], 
+                                         qm2$Gene.symbol[qm2$Treatment== unique(qm2$Treatment)[3]],
+                                         qm2$Gene.symbol[qm2$Treatment== unique(qm2$Treatment)[4]],
+                                         qm2$Gene.symbol[qm2$Treatment== unique(qm2$Treatment)[5]],
+                                         qm2$Gene.symbol[qm2$Treatment== unique(qm2$Treatment)[6]],
+                                         qm2$Gene.symbol[qm2$Treatment== unique(qm2$Treatment)[7]],
+                                         qm2$Gene.symbol[qm2$Treatment== unique(qm2$Treatment)[8]],
+                                         qm2$Gene.symbol[qm2$Treatment== unique(qm2$Treatment)[9]],
+                                         qm2$Gene.symbol[qm2$Treatment== unique(qm2$Treatment)[10]],
+                                         qm2$Gene.symbol[qm2$Treatment== unique(qm2$Treatment)[11]],
+                                         qm2$Gene.symbol[qm2$Treatment== unique(qm2$Treatment)[12]]))
+
+```
+
+```{r 3PL pred function and other functions}
+
+#function to predict from 3PL model
+pred_nplr <- function(x, pl){
+  predy <- nplr::getEstimates(pl,values)
+  return(predy)
+}
+
+```
+
+
+all PL tested for best fit (nplr) models
+
+```{r all_PL function}
+#range_func <- function(x){(x - min(x))/(max(x)-min(x))}
+
+#lowest LFC ratio (-LFC values) is still considered as zero when converted to proportions of 0-1
+
+#list of compounds to consider
+compy_list = unique(qm4$Treatment)
+
+for (compy in compy_list){
+
+  am=qm4[qm4$Treatment == compy,]
+
+  proc <- 'data/processed_data/all_PL_models_genes_noprop_ccfiltered_64genes'
+  check.dir(proc)
+
+  pathy = file.path(proc, unique(am$Treatment))
+  check.dir(path =pathy)
+ 
+  for (i in unique(am$Oligo_gene)){
+    ab = am[am$Oligo_gene == i,]
+    df1 = ab[grep(pattern = "Conc", x = ab$terms ),]
+    df2 = ab[grep(pattern = "Ratio", x = ab$terms ),]
+    df2 = df2[c(4,5)]
+    names(df2) = c('Ratios', 'R_values')
+    df = cbind(df1, df2 )
+    pl_mod <- nplr(x = df$values,
+              y = convertToProp(abs(df$R_values)),
+              npars = "all", useLog = T)
+    file1 = file.path(pathy, glue::glue('pl_mod.', unique(ab$Treatment),'_' ,i ))
+    saveRDS(object = pl_mod,file = file1)
+    print(paste0("processing comp/gene: ",unique(ab$Treatment),"/",i))
+  }
+}
+```
+
+function to pick sample plots to compare using a random set.seed
+
+```{r pick sample plots to compare}
+#4PL
+#CHIR_99021 1573_RUNX1
+#LY-411575 425_LEFTY1
+#XAV939 1123_LMX1A
+#SB_431542  407_KRT14
+#PD_173074   76_CCNG2
+#set.seed(1111)
+
+m = sample(compy_list, size = 1)
+# checks -  
+#m= "Retinoid_acid"
+
+am=qm4[qm4$Treatment == m,]
+am = am[am$Gene.symbol %in% common_genes,]
+
+i = sample(unique(am$Oligo_gene),size = 1)
+#  checks - 
+#m =  "1062_PITX2"
+
+ab = am[am$Oligo_gene == i,]
+df1 = ab[grep(pattern = "Conc", x = ab$terms ),]
+df2 = ab[grep(pattern = "Ratio", x = ab$terms ),]
+df2 = df2[c(4,5)]
+names(df2) = c('Ratios', 'R_values')
+df = cbind(df1, df2 )
+
+df_1 <- df %>% mutate(values = log10(values), R_values = (R_values))
+
+#standardised gam fit
+gam_mod <- gam(R_values ~s(values, k=6), data =df_1, method = "REML",select = F,control =gam.control(nthreads=12))
+p <- predict_gam(gam_mod)
+p_gam = p %>% ggplot(aes(values, fit)) + geom_smooth_ci() + geom_point(data = df_1, aes(values, R_values))
+
+#non-standardised gam fit - just to check
+# gam_mod2 <- gam(R_values ~s(values, k=6), data =df, method = "REML",select = T,control =gam.control(nthreads=12))
+# p2 <- predict_gam(gam_mod2)
+# p_gam2 = p2 %>% ggplot(aes(values, fit)) + geom_smooth_ci() + geom_point(data = df, aes(values, R_values))
+
+#pl fit
+pp=nplr(x = df$values, y = convertToProp(df$R_values), npars="all")
+
+#plots
+
+plot.nplr(pp)
+p_gam
+
+#save plots
+check.dir('data/processed_data/plots/')
+
+pathy = 'data/processed_data/plots/PL_plots/'
+check.dir(pathy)
+pdf(paste0(pathy,m,'_',i,'_pl_mod.pdf'), width = 10, height = 8)
+plot.nplr(pp)
+dev.off()
+
+pathy = 'data/processed_data/plots/GAM_plots/'
+check.dir(pathy)
+ggsave(plot =p_gam, paste0(pathy,m,'_',i,'_gam_mod.pdf'),  width = 10, height = 8)
+
+
+```
